@@ -114,7 +114,7 @@ CHANNEL_LINK = os.getenv("CHANNEL_LINK", "")
 DOMAIN = "jogoka.com"
 PK = os.getenv(
     "STRIPE_PK",
-    ""
+    "")
 
 # Create folders
 Path(RECEIVED_FOLDER).mkdir(exist_ok=True, parents=True)
