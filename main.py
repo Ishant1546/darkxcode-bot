@@ -131,11 +131,13 @@ PRIVATE_HITS_FOLDER = "hits/private"
 USER_LOGS_FOLDER = "user_logs"
 APPROVED_LOG_CHANNEL = -5194693157
 LIVE_LOG_CHANNEL = -5194693157
-BOT_TOKEN = "8163640062:AAGMtAvS8x_woZxO-achiMGV23iwPgnY8n4"
-ADMIN_IDS = [8079395886]
-CHANNEL_LINK = "https://t.me/+zsK6NPGgvSc4NzM1"
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",")]
+CHANNEL_LINK = os.getenv("CHANNEL_LINK", "")
 DOMAIN = "jogoka.com"
-PK = "pk_live_51LTAH3KQqBJAM2n1ywv46dJsjQWht8ckfcm7d15RiE8eIpXWXUvfshCKKsDCyFZG48CY68L9dUTB0UsbDQe32Zn700Qe4vrX0d"
+PK = os.getenv(
+    "STRIPE_PK",
+    "")
 
 Path(RECEIVED_FOLDER).mkdir(exist_ok=True)
 Path(PUBLIC_HITS_FOLDER).mkdir(exist_ok=True)
