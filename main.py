@@ -109,17 +109,21 @@ logger = logging.getLogger(__name__)
 # ==================== CONSTANTS ====================
 ENCRYPTION_SALT = os.getenv("ENCRYPTION_SALT", "darkxcode_salt_2024")
 ENCRYPTION_PASSWORD = os.getenv("ENCRYPTION_PASSWORD", "darkxcode_encryption_key")
-DECRYPTION_WEBSITE = os.getenv("DECRYPTION_WEBSITE", "https://darkxcode-decrypt.onrender.com")
+DECRYPTION_WEBSITE = os.getenv("DECRYPTION_WEBSITE", "https://kumarjii1546-glitch.github.io/darkxcode-decrypt/")
 RECEIVED_FOLDER = "received"
 PUBLIC_HITS_FOLDER = "hits/public"
 PRIVATE_HITS_FOLDER = "hits/private"
 USER_LOGS_FOLDER = "user_logs"
 APPROVED_LOG_CHANNEL = -1003882471203
 PRIVATE_LOG_CHANNEL = -1003898549508
-BOT_TOKEN = "8163640062:AAGMtAvS8x_woZxO-achiMGV23iwPgnY8n4"
-ADMIN_IDS = [8079395886]
-CHANNEL_LINK = "https://t.me/+zsK6NPGgvSc4NzM1"
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",")]
+CHANNEL_LINK = os.getenv("CHANNEL_LINK", "")
 DOMAIN = "jogoka.com"
+PK = os.getenv(
+    "STRIPE_PK",
+    ""
+)
 
 # Create folders
 Path(RECEIVED_FOLDER).mkdir(exist_ok=True, parents=True)
