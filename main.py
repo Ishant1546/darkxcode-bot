@@ -5210,17 +5210,17 @@ Credits Used: {total_credits_used}
             result_card, status, message, http_code = await check_single_card_fast(card)
             actual_time = time.time() - start_time
 
-            # Get credit cost
+            # Get credit cost - CORRECTED: removed incorrect try block
             credit_cost = get_credit_cost(status)
 
-# Check if user has enough credits for this card (only for paid cards)
-if credit_cost > 0:
-    # Refresh user data to get current credits
-    current_user = await get_user(user_id)
-    if current_user["credits"] < credit_cost:
-        logger.warning(f"User {user_id} ran out of credits during mass check")
-        break
-    user = current_user  # Update cached user
+            # Check if user has enough credits for this card (only for paid cards)
+            if credit_cost > 0:
+                # Refresh user data to get current credits
+                current_user = await get_user(user_id)
+                if current_user["credits"] < credit_cost:
+                    logger.warning(f"User {user_id} ran out of credits during mass check")
+                    break
+                user = current_user  # Update cached user
 
             processed += 1
             total_credits_used += credit_cost
