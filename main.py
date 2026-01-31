@@ -177,7 +177,7 @@ STATUS_MAPPING = {
 # Bot info
 BOT_INFO = {
     "name": "⚡ DARKXCODE STRIPE CHECKER ⚡",
-    "version": "3.0",
+    "version": "3.1",
     "creator": "@ISHANT_OFFICIAL",
     "gates": "Stripe Auth",
     "features": "• New Credit System\n• Card Generator\n• Card VBV Check\n• Daily Credits & Leaderboards\n• Upgradeable Plans\n• Fast Single Check\n• Mass Checks\n• Real-time Statistics\n• Invite & Earn System\n",
@@ -3794,10 +3794,10 @@ async def chk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result_card, status, message, http_code = await check_single_card_fast(card_input)
     actual_time = time.time() - start_time
 
-    # Get credit cost - FIXED INDENTATION
+    # Get credit cost - CORRECTED INDENTATION
     credit_cost = get_credit_cost(status)
 
-    # Check if user has enough credits (only for paid cards) - FIXED INDENTATION
+    # Check if user has enough credits (only for paid cards) - CORRECTED INDENTATION
     if credit_cost > 0 and user.get("credits", 0) < credit_cost:
         await processing_msg.edit_text(
             f"💰 Insufficient Credits\n"
@@ -3810,7 +3810,7 @@ async def chk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Update user statistics - FIXED INDENTATION
+    # Update user statistics - CORRECTED INDENTATION
     updates = {
         "total_checks": user.get("total_checks", 0) + 1,
     }
@@ -3831,7 +3831,7 @@ async def chk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]:
         updates[status_field] = user.get(status_field, 0) + 1
 
-    # Only deduct credits for approved/live cards - FIXED INDENTATION
+    # Only deduct credits for approved/live cards - CORRECTED INDENTATION
     if credit_cost > 0:
         updates["credits"] = user.get("credits", 0) - credit_cost
         updates["credits_spent"] = user.get("credits_spent", 0) + credit_cost
@@ -3839,12 +3839,12 @@ async def chk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update_user(user_id, updates)
 
-    # Update bot statistics - FIXED INDENTATION
+    # Update bot statistics - CORRECTED INDENTATION
     await update_bot_stats(
         {"total_checks": 1, "total_credits_used": credit_cost, f"total_{status}": 1}
     )
 
-    # Format result - FIXED INDENTATION
+    # Format result - CORRECTED INDENTATION
     result_text = format_universal_result(
         card_data=result_card,
         status=status,
@@ -3856,7 +3856,7 @@ async def chk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await processing_msg.edit_text(result_text, parse_mode=ParseMode.HTML)
 
-    # Save hit and forward to PRIVATE channel - FIXED INDENTATION
+    # Save hit and forward to PRIVATE channel - CORRECTED INDENTATION
     if status in ["approved", "live"]:
         save_hit_card(user_id, card_input, status, is_private=True)
         await send_to_log_channel(
@@ -3910,8 +3910,8 @@ async def pchk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     processing_msg = await update.message.reply_text(
         "[↯] Card: Processing...\n"
         "[↯] Status: Processing...\n"
-        "[↯] Response: Processing\n"
-        "[↯] Gateway: Processing\n"
+        "[↯] Response: Processing...\n"
+        "[↯] Gateway: Processing...\n"
         "- - - - - - - - - - - - - - - - - - - - - -\n"
         "[↯] Bank: Processing...\n"
         "[↯] Country: Processing...\n"
@@ -3927,54 +3927,55 @@ async def pchk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result_card, status, message, http_code = await check_single_card_fast(card_input)
     actual_time = time.time() - start_time
 
-credit_cost = get_credit_cost(status)
+    # CORRECTED INDENTATION FROM HERE:
+    credit_cost = get_credit_cost(status)
 
-# Check if user has enough credits (only for paid cards)
-if credit_cost > 0 and user.get("credits", 0) < credit_cost:
-    await processing_msg.edit_text(
-        f"💰 Insufficient Credits\n"
-        f"Status: {status.upper()}\n"
-        f"Cost: {credit_cost} credits\n"
-        f"Your balance: {user['credits']} credits\n\n"
-        f"*Credit Costs:*\n"
-        f"• ✅ Approved/🔥 Live: 3 credits\n"
-        f"• ❌ All Declined Cards: FREE"
-    )
-    return
-
-# Update user statistics
-updates = {
-    "total_checks": user.get("total_checks", 0) + 1,
-}
-
-# Update specific counters
-status_field = f"{status}_cards"
-if status_field in [
-    "approved_cards",
-    "live_cards",
-    "ccn_cards",
-    "cvv_cards",
-    "declined_cards",
-    "risk_cards",
-    "fraud_cards",
-    "call_issuer_cards",
-    "cannot_auth_cards",
-    "processor_declined_cards",
-]:
-    updates[status_field] = user.get(status_field, 0) + 1
-
-# Only deduct credits for approved/live cards
-if credit_cost > 0:
-    updates["credits"] = user.get("credits", 0) - credit_cost
-    updates["credits_spent"] = user.get("credits_spent", 0) + credit_cost
-    updates["credits_used_today"] = user.get("credits_used_today", 0) + credit_cost
-
-await update_user(user_id, updates)
-
-        # Update bot statistics
-        await update_bot_stats(
-            {"total_checks": 1, "total_credits_used": credit_cost, f"total_{status}": 1}
+    # Check if user has enough credits (only for paid cards)
+    if credit_cost > 0 and user.get("credits", 0) < credit_cost:
+        await processing_msg.edit_text(
+            f"💰 Insufficient Credits\n"
+            f"Status: {status.upper()}\n"
+            f"Cost: {credit_cost} credits\n"
+            f"Your balance: {user['credits']} credits\n\n"
+            f"*Credit Costs:*\n"
+            f"• ✅ Approved/🔥 Live: 3 credits\n"
+            f"• ❌ All Declined Cards: FREE"
         )
+        return
+
+    # Update user statistics
+    updates = {
+        "total_checks": user.get("total_checks", 0) + 1,
+    }
+
+    # Update specific counters
+    status_field = f"{status}_cards"
+    if status_field in [
+        "approved_cards",
+        "live_cards",
+        "ccn_cards",
+        "cvv_cards",
+        "declined_cards",
+        "risk_cards",
+        "fraud_cards",
+        "call_issuer_cards",
+        "cannot_auth_cards",
+        "processor_declined_cards",
+    ]:
+        updates[status_field] = user.get(status_field, 0) + 1
+
+    # Only deduct credits for approved/live cards
+    if credit_cost > 0:
+        updates["credits"] = user.get("credits", 0) - credit_cost
+        updates["credits_spent"] = user.get("credits_spent", 0) + credit_cost
+        updates["credits_used_today"] = user.get("credits_used_today", 0) + credit_cost
+
+    await update_user(user_id, updates)
+
+    # Update bot statistics
+    await update_bot_stats(
+        {"total_checks": 1, "total_credits_used": credit_cost, f"total_{status}": 1}
+    )
 
     # Format result
     result_text = format_universal_result(
