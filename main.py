@@ -10,9 +10,9 @@ import re
 import sys
 import urllib.parse
 import aiohttp
-from io import BytesIO
 import string
 import uuid
+from io import BytesIO
 from bs4 import BeautifulSoup
 from mimesis import Generic as Gen
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -28,19 +28,15 @@ from telegram.constants import ParseMode
 from telegram.error import NetworkError, BadRequest, TimedOut
 import logging
 from telegram.helpers import escape_markdown
-import asyncpg
 import firebase_admin
 from firebase_admin import credentials, firestore
+from google.cloud import firestore
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 import requests
-import shutil
 from pathlib import Path
 import hashlib
 import base64
-from cryptography.fernet import Fernet
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 load_dotenv()
 
@@ -436,7 +432,8 @@ def create_decryption_button(encrypted_card):
 
     encoded_card = urllib.parse.quote(encrypted_card)
     decryption_url = f"{DECRYPTION_WEBSITE}/?data={encoded_card}"
-
+    
+    return InlineKeyboardButton("🔓 Decrypt Card", url=decryption_url)
 
 async def backup_database():
     """Create a backup of the database"""
@@ -722,9 +719,9 @@ def get_credit_cost(status, command_type="check"):
 
     elif command_type == "gen":
         # This should be calculated separately based on count
-        return 0  # Base cost
+        return 0  # Base cost (always free)
 
-    return 1  # Default fallback
+    return 0  # Default fallback (free)
 
 
 def format_universal_result(
@@ -734,8 +731,9 @@ def format_universal_result(
     gateway="Stripe Auth",
     username=None,
     time_taken=None,
+    credits_left=None,  # Add this parameter
 ):
-    """Format card result"""
+    """Format card result with all parameters"""
     try:
         # Parse card data
         if isinstance(card_data, str):
@@ -775,7 +773,7 @@ def format_universal_result(
         if time_taken is None:
             time_taken = random.uniform(0.5, 0.8)
 
-        # Build the exact format you requested
+        # Build the result
         result = f"""
 [↯] Card: <code>{cc}|{mon}|{year}|{cvv}</code>
 [↯] Status: {status_display}
@@ -786,8 +784,13 @@ def format_universal_result(
 [↯] Country: {bin_info['country']} {bin_info['country_flag']}
 - - - - - - - - - - - - - - - - - - - - - -
 [↯] 𝐓𝐢𝐦𝐞: {time_taken:.2f}s
-- - - - - - - - - - - - - - - - - - - - - -
-[↯] User : @{username or 'N/A'}
+"""
+
+        # Add credits left if provided
+        if credits_left is not None:
+            result += f"[↯] Credits Left: {credits_left}\n"
+
+        result += f"""[↯] User : @{username or 'N/A'}
 [↯] Made By: @ISHANT_OFFICIAL
 [↯] Bot: @DARKXCODE_STRIPE_BOT
 """
@@ -1083,6 +1086,26 @@ async def update_bot_stats(updates):
         else:
             in_memory_bot_stats[key] = value
 
+async def update_total_users_stats():
+    """Update total users count in bot statistics"""
+    try:
+        # Count total users
+        total_users = 0
+        
+        if firebase_connected:
+            db = get_db()
+            users_ref = db.collection("users")
+            docs = users_ref.stream()
+            total_users = sum(1 for _ in docs)
+        else:
+            total_users = len(in_memory_users)
+        
+        # Update bot stats
+        await update_bot_stats({"total_users": total_users})
+        return total_users
+    except Exception as e:
+        logger.error(f"Error updating total users stats: {e}")
+        return len(in_memory_users)
 
 async def admindb_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin database management dashboard"""
@@ -2616,24 +2639,6 @@ async def update_gift_code_usage(code, user_id):
 
 # ==================== NEW CHECKER ENGINE ====================
 
-
-async def magneto_check(number: str) -> bool:
-    """Luhn validation check"""
-    digits = "".join(ch for ch in number if ch.isdigit())
-    if not digits:
-        return False
-    total = 0
-    reverse = digits[::-1]
-    for i, ch in enumerate(reverse):
-        n = int(ch)
-        if i % 2 == 1:
-            n *= 2
-            if n > 9:
-                n -= 9
-        total += n
-    return total % 10 == 0
-
-
 def generate_random_time():
     """Generate random timestamp"""
     return int(time.time()) - random.randint(100, 1000)
@@ -3311,18 +3316,13 @@ async def copy_invite_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle admin panel callback"""
     query = update.callback_query
-
-    try:
-        await query.answer()
-    except BadRequest:
-        pass
-
+    await query.answer()
+    
     user_id = query.from_user.id
-
     if user_id not in ADMIN_IDS:
         await query.answer("❌ Admin only!", show_alert=True)
         return
-
+    
     keyboard = [
         [
             InlineKeyboardButton("➕ Add Credits", callback_data="admin_addcr"),
@@ -3338,7 +3338,7 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         ],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-
+    
     await query.edit_message_text(
         "*👑 ADMIN PANEL*\n"
         "══════════════════════\n"
@@ -3777,8 +3777,8 @@ async def chk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     processing_msg = await update.message.reply_text(
         "[↯] Card: Processing...\n"
         "[↯] Status: Processing...\n"
-        "[↯] Response: Processing\n"
-        "[↯] Gateway: Processing\n"
+        "[↯] Response: Processing...\n"
+        "[↯] Gateway: Processing...\n"
         "- - - - - - - - - - - - - - - - - - - - - -\n"
         "[↯] Bank: Processing...\n"
         "[↯] Country: Processing...\n"
@@ -3794,11 +3794,11 @@ async def chk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result_card, status, message, http_code = await check_single_card_fast(card_input)
     actual_time = time.time() - start_time
 
-    # Get credit cost based on status
+    # Get credit cost - FIXED INDENTATION
     credit_cost = get_credit_cost(status)
 
-    # Check if user has enough credits
-    if user.get("credits", 0) < credit_cost and credit_cost > 0:
+    # Check if user has enough credits (only for paid cards) - FIXED INDENTATION
+    if credit_cost > 0 and user.get("credits", 0) < credit_cost:
         await processing_msg.edit_text(
             f"💰 Insufficient Credits\n"
             f"Status: {status.upper()}\n"
@@ -3810,38 +3810,41 @@ async def chk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Only deduct credits for approved/live cards
+    # Update user statistics - FIXED INDENTATION
+    updates = {
+        "total_checks": user.get("total_checks", 0) + 1,
+    }
+
+    # Update specific counters
+    status_field = f"{status}_cards"
+    if status_field in [
+        "approved_cards",
+        "live_cards",
+        "ccn_cards",
+        "cvv_cards",
+        "declined_cards",
+        "risk_cards",
+        "fraud_cards",
+        "call_issuer_cards",
+        "cannot_auth_cards",
+        "processor_declined_cards",
+    ]:
+        updates[status_field] = user.get(status_field, 0) + 1
+
+    # Only deduct credits for approved/live cards - FIXED INDENTATION
     if credit_cost > 0:
-        updates = {
-            "credits": user.get("credits", 0) - credit_cost,
-            "credits_spent": user.get("credits_spent", 0) + credit_cost,
-            "credits_used_today": user.get("credits_used_today", 0) + credit_cost,
-        }
+        updates["credits"] = user.get("credits", 0) - credit_cost
+        updates["credits_spent"] = user.get("credits_spent", 0) + credit_cost
+        updates["credits_used_today"] = user.get("credits_used_today", 0) + credit_cost
 
-        # Update specific counters
-        status_field = f"{status}_cards"
-        if status_field in [
-            "approved_cards",
-            "live_cards",
-            "ccn_cards",
-            "cvv_cards",
-            "declined_cards",
-            "risk_cards",
-            "fraud_cards",
-            "call_issuer_cards",
-            "cannot_auth_cards",
-            "processor_declined_cards",
-        ]:
-            updates[status_field] = user.get(status_field, 0) + 1
+    await update_user(user_id, updates)
 
-        await update_user(user_id, updates)
+    # Update bot statistics - FIXED INDENTATION
+    await update_bot_stats(
+        {"total_checks": 1, "total_credits_used": credit_cost, f"total_{status}": 1}
+    )
 
-        # Update bot statistics
-        await update_bot_stats(
-            {"total_checks": 1, "total_credits_used": credit_cost, f"total_{status}": 1}
-        )
-
-    # Format result
+    # Format result - FIXED INDENTATION
     result_text = format_universal_result(
         card_data=result_card,
         status=status,
@@ -3853,7 +3856,7 @@ async def chk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await processing_msg.edit_text(result_text, parse_mode=ParseMode.HTML)
 
-    # Save hit and forward to PRIVATE channel
+    # Save hit and forward to PRIVATE channel - FIXED INDENTATION
     if status in ["approved", "live"]:
         save_hit_card(user_id, card_input, status, is_private=True)
         await send_to_log_channel(
@@ -3863,7 +3866,7 @@ async def chk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             message=message,
             username=username,
             time_taken=actual_time,
-            is_private=True,  # PRIVATE channel
+            is_private=True,
         )
         logger.info(
             f"PRIVATE hit: User {user_id} ({username}) - {status.upper()}: {card_input} | Cost: {credit_cost} credits"
@@ -3924,47 +3927,49 @@ async def pchk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result_card, status, message, http_code = await check_single_card_fast(card_input)
     actual_time = time.time() - start_time
 
-    # Get credit cost based on status
-    credit_cost = get_credit_cost(status)
+credit_cost = get_credit_cost(status)
 
-    # Check if user has enough credits
-    if user.get("credits", 0) < credit_cost and credit_cost > 0:
-        await processing_msg.edit_text(
-            f"💰 Insufficient Credits\n"
-            f"Status: {status.upper()}\n"
-            f"Cost: {credit_cost} credits\n"
-            f"Your balance: {user['credits']} credits\n\n"
-            f"*Credit Costs:*\n"
-            f"• ✅ Approved/🔥 Live: 3 credits\n"
-            f"• ❌ All Declined Cards: FREE"
-        )
-        return
+# Check if user has enough credits (only for paid cards)
+if credit_cost > 0 and user.get("credits", 0) < credit_cost:
+    await processing_msg.edit_text(
+        f"💰 Insufficient Credits\n"
+        f"Status: {status.upper()}\n"
+        f"Cost: {credit_cost} credits\n"
+        f"Your balance: {user['credits']} credits\n\n"
+        f"*Credit Costs:*\n"
+        f"• ✅ Approved/🔥 Live: 3 credits\n"
+        f"• ❌ All Declined Cards: FREE"
+    )
+    return
 
-    # Only deduct credits for approved/live cards
-    if credit_cost > 0:
-        updates = {
-            "credits": user.get("credits", 0) - credit_cost,
-            "credits_spent": user.get("credits_spent", 0) + credit_cost,
-            "credits_used_today": user.get("credits_used_today", 0) + credit_cost,
-        }
+# Update user statistics
+updates = {
+    "total_checks": user.get("total_checks", 0) + 1,
+}
 
-        # Update specific counters
-        status_field = f"{status}_cards"
-        if status_field in [
-            "approved_cards",
-            "live_cards",
-            "ccn_cards",
-            "cvv_cards",
-            "declined_cards",
-            "risk_cards",
-            "fraud_cards",
-            "call_issuer_cards",
-            "cannot_auth_cards",
-            "processor_declined_cards",
-        ]:
-            updates[status_field] = user.get(status_field, 0) + 1
+# Update specific counters
+status_field = f"{status}_cards"
+if status_field in [
+    "approved_cards",
+    "live_cards",
+    "ccn_cards",
+    "cvv_cards",
+    "declined_cards",
+    "risk_cards",
+    "fraud_cards",
+    "call_issuer_cards",
+    "cannot_auth_cards",
+    "processor_declined_cards",
+]:
+    updates[status_field] = user.get(status_field, 0) + 1
 
-        await update_user(user_id, updates)
+# Only deduct credits for approved/live cards
+if credit_cost > 0:
+    updates["credits"] = user.get("credits", 0) - credit_cost
+    updates["credits_spent"] = user.get("credits_spent", 0) + credit_cost
+    updates["credits_used_today"] = user.get("credits_used_today", 0) + credit_cost
+
+await update_user(user_id, updates)
 
         # Update bot statistics
         await update_bot_stats(
@@ -4552,33 +4557,37 @@ async def generate_from_card_format(
 
 def parse_card_input(card_input):
     """Parse card input with multiple format support"""
-    # Remove extra spaces
-    card_input = card_input.strip()
+    try:
+        # Remove extra spaces
+        card_input = card_input.strip()
 
-    # Try different separators
-    separators = ["|", "/", " ", ";", ":"]
+        # Try different separators
+        separators = ["|", "/", " ", ";", ":"]
 
-    for sep in separators:
-        if sep in card_input:
-            parts = card_input.split(sep)
-            if len(parts) >= 4:
-                # Clean each part
-                cc = parts[0].replace(" ", "")
-                mon = parts[1].replace(" ", "")
-                year = parts[2].replace(" ", "")
-                cvv = parts[3].replace(" ", "")
-                return cc, mon, year, cvv
+        for sep in separators:
+            if sep in card_input:
+                parts = card_input.split(sep)
+                if len(parts) >= 4:
+                    # Clean each part
+                    cc = parts[0].replace(" ", "")
+                    mon = parts[1].replace(" ", "")
+                    year = parts[2].replace(" ", "")
+                    cvv = parts[3].replace(" ", "")
+                    return cc, mon, year, cvv
 
-    # If no separator found, try to parse as continuous string
-    # Format: 16digits4digits3digits (CC+YYMM+CVV)
-    if len(card_input) >= 23 and card_input.isdigit():
-        cc = card_input[:16]
-        year = card_input[16:18]  # YY
-        mon = card_input[18:20]  # MM
-        cvv = card_input[20:23]  # CVV
-        return cc, mon, year, cvv
+        # If no separator found, try to parse as continuous string
+        if len(card_input) >= 23 and card_input.replace(" ", "").isdigit():
+            clean = card_input.replace(" ", "")
+            cc = clean[:16]
+            year = clean[16:18]  # YY
+            mon = clean[18:20]  # MM
+            cvv = clean[20:23]  # CVV
+            return cc, mon, year, cvv
 
-    return None, None, None, None
+        return None, None, None, None
+    except Exception as e:
+        logger.error(f"Error in parse_card_input: {e}")
+        return None, None, None, None
 
 
 async def generate_from_bin_format(
@@ -5203,10 +5212,14 @@ Credits Used: {total_credits_used}
             # Get credit cost
             credit_cost = get_credit_cost(status)
 
-            # Check if user has enough credits for this card
-            if user["credits"] < credit_cost:
-                logger.warning(f"User {user_id} ran out of credits during mass check")
-                break
+# Check if user has enough credits for this card (only for paid cards)
+if credit_cost > 0:
+    # Refresh user data to get current credits
+    current_user = await get_user(user_id)
+    if current_user["credits"] < credit_cost:
+        logger.warning(f"User {user_id} ran out of credits during mass check")
+        break
+    user = current_user  # Update cached user
 
             processed += 1
             total_credits_used += credit_cost
@@ -5353,13 +5366,13 @@ User: @{username}
     except Exception as e:
         logger.error(f"Error in public_mass_check_task: {e}")
         try:
-            await status_msg.edit_text(f"❌ Error during mass check: {str(e)}")
+            await status_msg.edit_text(f"❌ Error during public mass check: {str(e)}")
         except:
             pass
     finally:
         # Decrement active checks
         await decrement_active_checks(user_id)
-
+        
         # Cleanup
         if user_id in checking_tasks:
             del checking_tasks[user_id]
@@ -5574,16 +5587,17 @@ Credits Used: {total_credits_used}
             result_card, status, message, http_code = await check_single_card_fast(card)
             actual_time = time.time() - start_time
 
-            # Get credit cost
-            credit_cost = get_credit_cost(status)
+# Get credit cost
+credit_cost = get_credit_cost(status)
 
-            # Check if user has enough credits for this card
-            if user["credits"] < credit_cost:
-                logger.warning(f"User {user_id} ran out of credits during mass check")
-                break
-
-            processed += 1
-            total_credits_used += credit_cost
+# Check if user has enough credits for this card (only for paid cards)
+if credit_cost > 0:
+    # Refresh user data to get current credits
+    current_user = await get_user(user_id)
+    if current_user["credits"] < credit_cost:
+        logger.warning(f"User {user_id} ran out of credits during mass check")
+        break
+    user = current_user  # Update cached user
 
             # Update counters
             if status == "approved":
@@ -5754,7 +5768,7 @@ User: @{username}
     finally:
         # Decrement active checks
         await decrement_active_checks(user_id)
-
+        
         # Cleanup
         if user_id in checking_tasks:
             del checking_tasks[user_id]
@@ -6012,11 +6026,11 @@ Results:
 
     # Save hits to files
     if approved_hits:
-        with open(f"{HITS_FOLDER}/{file_id}_approved.txt", "w", encoding="utf-8") as f:
+        with open(f"{PRIVATE_HITS_FOLDER}/{file_id}_approved.txt", "w", encoding="utf-8") as f:
             f.write("\n".join(approved_hits))
 
     if live_hits:
-        with open(f"{HITS_FOLDER}/{file_id}_live.txt", "w", encoding="utf-8") as f:
+        with open(f"{PRIVATE_HITS_FOLDER}/{file_id}_live.txt", "w", encoding="utf-8") as f:
             f.write("\n".join(live_hits))
 
     # Send files to log channels
@@ -6929,13 +6943,11 @@ def save_hit_card(user_id: int, card: str, status: str, is_private: bool = False
             return
 
         # Determine folder
-        # is_private=True: PRIVATE hits (chk/mchk)
-        # is_private=False: PUBLIC hits (pchk/pmchk)
         folder = PRIVATE_HITS_FOLDER if is_private else PUBLIC_HITS_FOLDER
         Path(folder).mkdir(parents=True, exist_ok=True)
 
         # File name format: userid_date_status.txt
-        date_str = dt.now().strftime("%Y%m%d_%H%M%S")
+        date_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{folder}/{user_id}_{date_str}_{status}.txt"
 
         # Append card to file
@@ -6944,7 +6956,6 @@ def save_hit_card(user_id: int, card: str, status: str, is_private: bool = False
 
     except Exception as e:
         logger.error(f"Error saving hit card: {e}")
-
 
 async def send_to_log_channel(
     context,
@@ -6958,12 +6969,20 @@ async def send_to_log_channel(
     """Send encrypted hits to channel with decryption button"""
     try:
         # Parse card
-        cc, mon, year, cvv = card.split("|")
+        if "|" in card:
+            cc, mon, year, cvv = card.split("|")
+        else:
+            # Try to parse using our helper
+            cc, mon, year, cvv = parse_card_input(card)
+            if not cc:
+                logger.error(f"Could not parse card: {card}")
+                return
+        
         cc_clean = cc.replace(" ", "")
 
         # Encrypt the card data using SIMPLE method
         original_card = f"{cc}|{mon}|{year}|{cvv}"
-        encrypted_card = encrypt_card_data(original_card)  # Uses simple ROT5
+        encrypted_card = encrypt_card_data(original_card)
 
         # Get BIN info
         bin_info = get_bin_info(cc_clean[:6])
@@ -7008,8 +7027,7 @@ async def send_to_log_channel(
         logger.info(f"✓ Sent encrypted {channel_label} hit to channel")
 
     except Exception as e:
-        logger.error(f"Error sending encrypted hit: {e}")
-
+        logger.error(f"Error sending to log channel: {e}")
 
 async def handle_file_upload_message(
     update: Update, context: ContextTypes.DEFAULT_TYPE
